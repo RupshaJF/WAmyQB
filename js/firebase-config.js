@@ -38,14 +38,6 @@
 //           allow read, write: if request.auth != null && request.auth.uid == uid;
 //         }
 //       }
-//       // WhatsApp-style Status/Stories (js/status.js) — everyone can read
-//       // (even signed-out visitors), but only the signed-in owner can
-//       // create/edit/delete their own status; any other signed-in user may
-//       // only append their own uid to `viewers`/`reactions`. The exact,
-//       // currently-deployed rule block (kept in sync with firestore_rules.txt)
-//       // lives as a comment at the top of js/status.js — see there, not here,
-//       // so there's only one copy to keep up to date.
-//       match /statuses/{statusId} { /* see js/status.js */ }
 //     }
 //   }
 

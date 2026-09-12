@@ -518,6 +518,7 @@ const QUICK_LINKS = [
 ];
 
 function renderHomeExtras(){
+  if(typeof renderStatusRow === 'function') renderStatusRow();
   renderAyahOfDay();
   renderHomeStreakRing();
   if(typeof renderHifzReviewCard === 'function') renderHifzReviewCard();

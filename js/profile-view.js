@@ -6,11 +6,10 @@
 // full profile when signed in — never an overlay.
 //
 // Contextual "you need to sign in to do X" prompts elsewhere in the app
-// (posting a status, re-authenticating for a security action, etc.) still
-// use the original overlay in js/auth.js (openAuthFlow) — that one makes
-// sense as an interruption over whatever the person was doing. Only the
-// primary entry point (bottom nav + the stats page's account row) now
-// goes to this page.
+// (re-authenticating for a security action, etc.) still use the original
+// overlay in js/auth.js (openAuthFlow) — that one makes sense as an
+// interruption over whatever the person was doing. Only the primary entry
+// point (bottom nav + the stats page's account row) now goes to this page.
 
 // Which signed-out screen to land on next time the page renders — set by
 // goToProfilePage()/wireAuthPageScreens() so "সাইন আপ করুন" vs the account

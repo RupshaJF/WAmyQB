@@ -57,6 +57,13 @@ function initAuth(){
 }
 
 function refreshCurrentView(){
+  // সাইন-ইন/আউট হলে হোম পেজের স্ট্যাটাস রো (js/status.js) সাথে সাথেই
+  // আপডেট হওয়া দরকার — লগ-আউট করলে অন্যদের স্ট্যাটাস আর দেখানো চলবে না,
+  // আর নতুন করে লগইন করলে আগের সেশনের পুরনো ক্যাশ না দেখিয়ে টাটকা তালিকা
+  // আনতে হবে।
+  if(typeof statusRowFetchedAt !== 'undefined') statusRowFetchedAt = 0;
+  if(typeof renderStatusRow === 'function') renderStatusRow();
+
   const statsView = document.getElementById('view-stats');
   if(statsView && statsView.classList.contains('active') && typeof renderStatsView === 'function') renderStatsView();
   // প্রোফাইল পেজ খোলা থাকলে সাইন-ইন/সাইন-আউট হওয়ার সাথে সাথেই এটাও রিফ্রেশ
@@ -997,20 +1004,11 @@ async function saveProfileChanges({ name, position, avatarColor, avatarIcon, pho
       throw new Error('restricted: প্রোফাইলের নাম/পদবি/বায়ো এখন পরিবর্তন করা যাবে না');
     }
   }
-  // Captured before state.user is overwritten below, so we know whether the
-  // still-active stories this account has posted need to be updated too.
-  const profileChangedForStatuses = name !== state.user.name || avatarColor !== state.user.avatarColor || avatarIcon !== state.user.avatarIcon;
-
   if(fbUser.displayName !== name){ await fbUser.updateProfile({ displayName: name }); }
   await fbDb.collection('users').doc(fbUser.uid).set({
     name, position, avatarColor, avatarIcon, phone, district, birthDate, bio, favoriteQari, favoriteSurah
   }, { merge: true });
   Object.assign(state.user, { name, position, avatarColor, avatarIcon, phone, district, birthDate, bio, favoriteQari, favoriteSurah });
-  // Fire-and-forget — keeps a rename from blocking the profile-save UX; the
-  // stories themselves are updated shortly after via a background write.
-  if(profileChangedForStatuses && typeof syncOwnStatusesProfile === 'function'){
-    syncOwnStatusesProfile(fbUser.uid, { name, avatarColor, avatarIcon });
-  }
   refreshCurrentView();
 }
 
@@ -1187,12 +1185,6 @@ async function performAccountDeletion(){
 // Errors from either step (e.g. auth/requires-recent-login) propagate to
 // the caller so it can reauthenticate and retry.
 async function deleteAccountEverywhere(fbUser){
-  // Must run first, while still authenticated — the security rules that let
-  // a user delete their own stories no longer apply once the Auth account
-  // below is gone, so this is the only real window to clean them up.
-  if(typeof deleteAllStatusesForUser === 'function'){
-    await deleteAllStatusesForUser(fbUser.uid);
-  }
   try{
     await fbDb.collection('users').doc(fbUser.uid).delete();
   }catch(e){

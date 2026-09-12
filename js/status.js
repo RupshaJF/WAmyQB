@@ -1,903 +1,751 @@
-// ---------- WhatsApp-style Status / Stories (text + আয়াত অডিও) ----------
-// A horizontal ring-bar (see #statusBar in index.html, right under the
-// রমজান banner) shows every account's current, non-expired status as a
-// tappable circle — exactly like WhatsApp Status. Tapping one opens a
-// full-screen story viewer that auto-advances between slides.
+// ---------- WhatsApp-style "Status" feature ----------
+// A row of circular avatars sits above the Daily-Ayah card on the home tab —
+// your own status (tap the + to post) plus everyone else's active (last
+// 24h) statuses. Tapping a circle opens a full-screen story viewer with
+// segmented progress bars, tap-to-advance / hold-to-pause, and — for your
+// own status only — a "কারা দেখেছে" (who viewed) list with a live count,
+// exactly like WhatsApp. Both posting AND viewing require a completed
+// sign-in/sign-up (js/auth.js openAuthFlow) — there is no guest path here.
 //
-// Two status types, chosen by the poster:
-//   'text' — plain typed text, shown full-screen over a picked colour
-//            gradient (a "story slide", not an uploaded photo).
-//   'ayah' — a picked সূরা:আয়াত, shown as Arabic + বাংলা অনুবাদ with its
-//            তিলাওয়াত audio auto-playing, like an audio story.
-//
-// Anyone can VIEW statuses — signed in or not. Posting a status requires
-// being signed in (js/auth.js state.user); guests are sent to the sign-in
-// overlay if they tap the "+".  Each status carries its own expiresAt,
-// picked by the poster at post time (১/৩/৬/১২/২৪/৪৮ ঘণ্টা), and is
-// filtered out client-side once expired.
-//
-// Firestore doc shape — collection "statuses":
-//   { uid, name, avatarColor, avatarIcon,
-//     type: 'text' | 'ayah',
-//     text, bg,                                              // type:'text'
-//     surah, ayah, surahName, arabic, translation,
-//     reciter, reciterName, audioUrl,                        // type:'ayah'
-//     createdAt (ms epoch, client clock), expiresAt (ms epoch),
-//     viewers: { [uid]: { name, avatarColor, avatarIcon, viewedAt } },
-//     reactions: { [uid]: { name, avatarColor, avatarIcon, at } } }  // love-only for now
-//
-// Bottom-left of the full-screen viewer shows the view COUNT (owner only,
-// tapping opens the "who has seen it" sheet — names + a heart if they also
-// reacted). Bottom-right shows a tappable love (❤) button for everyone
-// except the owner — tap to react, tap again to un-react.
-//
-// Firestore Rules needed (add alongside the ones already documented in
-// js/firebase-config.js) — public read, owner-only write, but any signed-in
-// user may write ONLY their own key inside `viewers` / `reactions`. Posting
-// is also blocked server-side for accounts an admin has marked
-// restricted/blocked. This is the exact rule block currently deployed
-// (from firestore_rules.txt) — keep this comment in sync if the deployed
-// rules ever change, since postStatusDoc()/submitStatus() above are written
-// to match it field-for-field:
-//
-//   match /statuses/{statusId} {
-//     allow read: if true;
-//
-//     allow create: if request.auth != null
-//       && request.resource.data.uid == request.auth.uid
-//       && request.resource.data.keys().hasOnly(
-//         ['uid','name','avatarColor','avatarIcon','type','text','bg',
-//          'surah','ayah','surahName','arabic','translation',
-//          'reciter','reciterName','audioUrl','createdAt','expiresAt',
-//          'viewers','reactions'])
-//       && request.resource.data.type in ['text','ayah']
-//       && request.resource.data.createdAt is number
-//       && request.resource.data.expiresAt is number
-//       && request.resource.data.expiresAt > request.resource.data.createdAt
-//       && request.resource.data.viewers == {}
-//       && request.resource.data.reactions == {}
-//       && !(exists(/databases/$(database)/documents/users/$(request.auth.uid))
-//            && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.status in ['restricted', 'blocked']);
-//
-//     allow update: if request.auth != null && (
-//       resource.data.uid == request.auth.uid ||
-//       (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewers'])
-//         && request.resource.data.viewers.diff(resource.data.get('viewers', {})).affectedKeys().hasOnly([request.auth.uid])
-//         && request.resource.data.viewers[request.auth.uid].keys().hasOnly(['name','avatarColor','avatarIcon','viewedAt'])) ||
-//       (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions'])
-//         && request.resource.data.reactions.diff(resource.data.get('reactions', {})).affectedKeys().hasOnly([request.auth.uid]))
-//     );
-//
-//     allow delete: if request.auth != null && (resource.data.uid == request.auth.uid || isAdmin());
-//   }
-//
-// Two account-lifecycle helpers near the bottom of this file keep stories
-// in sync with the account that owns them, called from js/auth.js:
-//   - deleteAllStatusesForUser(uid) — wipes this account's stories when the
-//     account itself is deleted (allow delete above covers it, since it
-//     runs while still authenticated as that uid).
-//   - syncOwnStatusesProfile(uid, profile) — updates name/avatar on this
-//     account's still-active stories right after a profile rename (allow
-//     update's first branch, resource.data.uid == request.auth.uid, covers
-//     any field on your own docs, not just viewers/reactions).
+// Firestore layout (see firestore.rules for the matching security rules):
+//   statuses/{statusId}                 one doc per posted status
+//     uid, name, avatarColor, avatarIcon  — snapshot of the poster
+//     type: 'text' | 'image'
+//     text        — status text (type:text) or optional caption (type:image)
+//     bgIndex     — index into STATUS_BG_COLORS (type:text)
+//     font        — id from STATUS_FONTS (type:text)
+//     imageData   — compressed JPEG data URL (type:image)
+//     createdAt, expiresAt — client epoch-ms (24h TTL; expired ones simply
+//                             stop matching the "still active" query below —
+//                             no cleanup job needed for them to disappear)
+//     viewCount   — denormalized counter, +1 per unique viewer
+//   statuses/{statusId}/views/{viewerUid}
+//     name, avatarColor, avatarIcon, viewedAt
 
-const STATUS_TOTAL_AYAHS = 6236; // মোট আয়াত সংখ্যা — এলোমেলো আয়াত বাছাইয়ের জন্য
-const STATUS_DURATIONS = [1, 3, 6, 12, 24, 48]; // ঘণ্টা
-const STATUS_TEXT_MS = 6000; // টেক্সট স্ট্যাটাস স্লাইড কতক্ষণ দেখাবে
-const STATUS_BG_PRESETS = [
-  'linear-gradient(160deg,#0E3B36,#123A34)',
-  'linear-gradient(160deg,#7A3B12,#B5581F)',
-  'linear-gradient(160deg,#3D2470,#5A3A9E)',
-  'linear-gradient(160deg,#092723,#1B342C)',
-  'linear-gradient(160deg,#4A3568,#7A4AC7)',
-  'linear-gradient(160deg,#123A34,#C0973A)',
-  'linear-gradient(160deg,#7A1F3D,#B5335A)'
+const STATUS_TTL_MS = 24 * 60 * 60 * 1000;
+const STATUS_ITEM_MS = 6000; // how long a single item plays before auto-advancing
+const STATUS_ROW_CACHE_MS = 40000;
+
+const STATUS_BG_COLORS = ['#2E6F5E','#7A2E44','#3D4F8A','#6B3F8A','#8A4A2E','#2E6B8A','#5A6B2E','#3A3A46'];
+
+const STATUS_FONTS = [
+  { id:'sans',    family:"'Hind Siliguri', sans-serif",           weight:600 },
+  { id:'serif',   family:"'Noto Serif Bengali', Georgia, serif",  weight:600 },
+  { id:'mono',    family:"'Courier New', monospace",              weight:700 },
+  { id:'script',  family:"cursive",                                weight:500 },
+  { id:'display', family:"Impact, 'Hind Siliguri', sans-serif",   weight:700, upper:true }
 ];
 
-let statusUnsub = null;
-let statusList = [];      // flat, non-expired, all users
-let statusGroups = [];    // grouped by uid, in ring-bar order
-let statusViewerIdx = -1; // index into statusGroups currently open in the viewer
-let statusSlideIdx = 0;
-let statusSlideTimer = null;
-let statusAudioEl = null;
-let statusIsPaused = false;
-let statusHoldTimer = null;
-let statusSelectedBg = STATUS_BG_PRESETS[0];
-let statusSelectedDuration = 24;
-let statusSurahMetaCache = {};
+let statusGroupsCache = [];  // last fetched groups, {uid,name,avatarColor,avatarIcon,items:[]}[]
+let statusRowFetchedAt = 0;
+let statusRowLoading = false;
 
-// ================= Init / live listener =================
-function initStatus(){
-  if(!document.getElementById('statusBar')) return;
-  listenStatuses();
-  setInterval(pruneExpiredStatuses, 60000);
-}
+let statusComposerState = { mode:'text', colorIndex:0, fontIndex:0, imageDataUrl:null, textValue:'', captionText:'', sending:false };
 
-function listenStatuses(){
-  if(typeof fbDb === 'undefined' || !fbDb || typeof firebase === 'undefined'){
-    setTimeout(listenStatuses, 1500); // firebase-config.js / auth.js may still be loading
-    return;
-  }
-  if(statusUnsub) return;
-  try{
-    statusUnsub = fbDb.collection('statuses').orderBy('createdAt', 'desc').limit(200)
-      .onSnapshot(snap => {
-        const now = Date.now();
-        statusList = snap.docs.map(d => ({ id: d.id, ...d.data() })).filter(s => (s.expiresAt || 0) > now);
-        groupStatuses();
-        renderStatusBar();
-      }, err => console.warn('স্ট্যাটাস লোড ব্যর্থ:', err));
-  }catch(e){ console.warn('স্ট্যাটাস ইনিট ব্যর্থ:', e); }
-}
+let statusViewerState = {
+  open:false, groups:[], groupIndex:0, itemIndex:0,
+  timer:null, itemStartedAt:0, remainingMs:0, paused:false, currentFill:null
+};
 
-function pruneExpiredStatuses(){
-  const now = Date.now();
-  const before = statusList.length;
-  statusList = statusList.filter(s => (s.expiresAt || 0) > now);
-  if(statusList.length !== before){ groupStatuses(); renderStatusBar(); }
-}
-
-// ================= Locally-seen tracking (per-device, not per-account) =================
+// ---------- Local (per-device) caches — only drive the ring color / avoid
+// re-sending duplicate view writes; the real count + viewer list always
+// live server-side so they're correct from any device (js/idb.js) ----------
 function getSeenStatusIds(){
-  try{ return JSON.parse(localStorage.getItem('qr_seen_statuses') || '[]'); }catch(e){ return []; }
+  try{ return new Set(JSON.parse(IDBKV.get('qr_status_seen') || '[]')); }catch(e){ return new Set(); }
 }
 function markStatusSeenLocally(id){
-  try{
-    const arr = getSeenStatusIds();
-    if(!arr.includes(id)){
-      arr.push(id);
-      if(arr.length > 500) arr.splice(0, arr.length - 500);
-      localStorage.setItem('qr_seen_statuses', JSON.stringify(arr));
-    }
-  }catch(e){}
+  const set = getSeenStatusIds();
+  if(set.has(id)) return;
+  set.add(id);
+  const arr = Array.from(set);
+  try{ IDBKV.set('qr_status_seen', JSON.stringify(arr.length > 300 ? arr.slice(arr.length - 300) : arr)); }catch(e){}
+}
+function getRecordedViewIds(){
+  try{ return new Set(JSON.parse(IDBKV.get('qr_status_view_recorded') || '[]')); }catch(e){ return new Set(); }
+}
+function markViewRecordedLocally(id){
+  const set = getRecordedViewIds();
+  if(set.has(id)) return;
+  set.add(id);
+  const arr = Array.from(set);
+  try{ IDBKV.set('qr_status_view_recorded', JSON.stringify(arr.length > 500 ? arr.slice(arr.length - 500) : arr)); }catch(e){}
 }
 
-// ================= Group + render the ring bar =================
-function groupStatuses(){
-  const byUid = new Map();
-  statusList.forEach(s => {
-    if(!byUid.has(s.uid)) byUid.set(s.uid, []);
-    byUid.get(s.uid).push(s);
-  });
-  const seen = getSeenStatusIds();
-  const myUid = state.user && state.user.uid;
-  statusGroups = Array.from(byUid.entries()).map(([uid, items]) => {
-    items.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0)); // oldest → newest (playback order)
-    const newest = items[items.length - 1];
-    return {
-      uid, name: newest.name, avatarColor: newest.avatarColor, avatarIcon: newest.avatarIcon,
-      items, hasUnseen: items.some(s => !seen.includes(s.id)), latestTs: newest.createdAt || 0
-    };
-  });
-  statusGroups.sort((a, b) => {
-    if(myUid){ if(a.uid === myUid) return -1; if(b.uid === myUid) return 1; }
-    if(a.hasUnseen !== b.hasUnseen) return a.hasUnseen ? -1 : 1;
-    return b.latestTs - a.latestTs;
-  });
-}
+// ==================================================================
+// Home-tab row
+// ==================================================================
+function renderStatusRow(){
+  const wrap = document.getElementById('statusRow');
+  if(!wrap) return;
 
-function statusAvatarHtml(g){
-  const style = g.avatarColor ? ` style="background:${g.avatarColor}"` : '';
-  const inner = (g.avatarIcon && /^[a-z0-9-]+$/i.test(g.avatarIcon))
-    ? `<i class="fa-solid fa-${g.avatarIcon}"></i>`
-    : escapeHtml(((g.name || '?').trim().charAt(0) || '?').toUpperCase());
-  return `<span class="status-ring-avatar"${style}>${inner}</span>`;
-}
-
-function renderStatusBar(){
-  const bar = document.getElementById('statusBar');
-  if(!bar) return;
-  const myUid = state.user && state.user.uid;
-  const myGroup = myUid ? statusGroups.find(g => g.uid === myUid) : null;
-  const others = statusGroups.filter(g => g.uid !== myUid);
-
-  if(!myGroup && !others.length && !state.user){
-    // guest, no statuses at all yet — still show a subtle "add" invite so
-    // it's discoverable, WhatsApp does the same with an empty status list.
-  }
-
-  let html = `
-    <div class="status-ring-item" data-mine="1">
-      <div class="status-ring-wrap">
-        <button type="button" class="status-ring-btn ${myGroup ? (myGroup.hasUnseen ? 'unseen' : 'seen') : 'empty'}" ${myGroup ? `data-open-group="${myGroup.uid}"` : 'data-status-add="1"'}>
-          ${myGroup ? statusAvatarHtml(myGroup) : `<span class="status-ring-avatar status-ring-avatar-empty">${state.user ? escapeHtml((state.user.name || '?').charAt(0).toUpperCase()) : '<i class="fa-solid fa-user"></i>'}</span>`}
-        </button>
-        <button type="button" class="status-ring-plus" data-status-add="1" title="নতুন স্ট্যাটাস"><i class="fa-solid fa-plus"></i></button>
-      </div>
-      <span class="status-ring-label">${myGroup ? 'আপনার স্ট্যাটাস' : 'স্ট্যাটাস যোগ করুন'}</span>
-    </div>`;
-
-  others.forEach(g => {
-    html += `
-    <div class="status-ring-item">
-      <div class="status-ring-wrap">
-        <button type="button" class="status-ring-btn ${g.hasUnseen ? 'unseen' : 'seen'}" data-open-group="${g.uid}">
-          ${statusAvatarHtml(g)}
-        </button>
-      </div>
-      <span class="status-ring-label">${escapeHtml((g.name || 'ব্যবহারকারী').split(' ')[0])}</span>
-    </div>`;
-  });
-
-  bar.innerHTML = html;
-  bar.style.display = 'flex';
-
-  bar.querySelectorAll('[data-status-add]').forEach(btn => {
-    btn.onclick = (e) => { e.stopPropagation(); openStatusComposer(); };
-  });
-  bar.querySelectorAll('[data-open-group]').forEach(btn => {
-    btn.onclick = () => {
-      const uid = btn.getAttribute('data-open-group');
-      const idx = statusGroups.findIndex(g => g.uid === uid);
-      if(idx !== -1) openStatusViewer(idx);
-    };
-  });
-}
-
-// ================= Composer =================
-function ensureStatusComposer(){
-  let el = document.getElementById('statusComposer');
-  if(el) return el;
-  el = document.createElement('div');
-  el.id = 'statusComposer';
-  el.className = 'app-modal';
-  el.style.display = 'none';
-  el.innerHTML = `
-    <div class="app-modal-box status-composer-box">
-      <div class="app-modal-head">
-        <div class="app-modal-head-title"><h3><i class="fa-solid fa-circle-plus"></i> নতুন স্ট্যাটাস</h3></div>
-        <button class="app-modal-close" id="statusComposerClose">✕</button>
-      </div>
-      <div class="app-modal-body">
-        <div class="status-type-tabs">
-          <button type="button" class="status-type-tab active" id="statusTypeTextBtn" data-type="text"><i class="fa-solid fa-font"></i> লেখা স্ট্যাটাস</button>
-          <button type="button" class="status-type-tab" id="statusTypeAyahBtn" data-type="ayah"><i class="fa-solid fa-book-quran"></i> আয়াত স্ট্যাটাস</button>
-        </div>
-
-        <div id="statusFormText">
-          <div class="status-text-preview" id="statusTextPreview" style="background:${statusSelectedBg}">
-            <textarea id="statusTextInput" maxlength="300" placeholder="আপনার মনের কথা লিখুন..."></textarea>
-          </div>
-          <div class="status-char-count"><span id="statusCharCount">0</span>/৩০০</div>
-          <div class="status-bg-swatches" id="statusBgSwatches">
-            ${STATUS_BG_PRESETS.map((bg, i) => `<button type="button" class="status-bg-swatch${i===0?' active':''}" data-bg="${bg}" style="background:${bg}"></button>`).join('')}
-          </div>
-        </div>
-
-        <div id="statusFormAyah" style="display:none;">
-          <div class="status-ayah-row">
-            <label>সূরা</label>
-            <select id="statusSurahSelect"></select>
-          </div>
-          <div class="status-ayah-row">
-            <label>আয়াত নম্বর</label>
-            <input type="number" id="statusAyahInput" min="1" value="1">
-          </div>
-          <div class="status-hint" id="statusAyahHint"></div>
-          <div class="status-ayah-row">
-            <label>ক্বারী</label>
-            <select id="statusReciterSelect"></select>
-          </div>
-          <button type="button" class="status-random-btn" id="statusRandomAyahBtn"><i class="fa-solid fa-shuffle"></i> এলোমেলো আয়াত</button>
-        </div>
-
-        <div class="status-duration-row" id="statusDurationRow"></div>
-
-        <button type="button" class="status-submit-btn" id="statusSubmitBtn"><i class="fa-solid fa-paper-plane"></i> স্ট্যাটাস পোস্ট করুন</button>
-      </div>
-    </div>`;
-  document.body.appendChild(el);
-
-  el.addEventListener('click', (e) => { if(e.target === el) closeStatusComposer(); });
-  document.getElementById('statusComposerClose').onclick = closeStatusComposer;
-
-  document.getElementById('statusTypeTextBtn').onclick = () => switchStatusType('text');
-  document.getElementById('statusTypeAyahBtn').onclick = () => switchStatusType('ayah');
-
-  const textInput = document.getElementById('statusTextInput');
-  textInput.addEventListener('input', () => {
-    document.getElementById('statusCharCount').textContent = toBn(textInput.value.length);
-  });
-
-  document.getElementById('statusBgSwatches').querySelectorAll('.status-bg-swatch').forEach(sw => {
-    sw.onclick = () => {
-      statusSelectedBg = sw.getAttribute('data-bg');
-      document.getElementById('statusTextPreview').style.background = statusSelectedBg;
-      el.querySelectorAll('.status-bg-swatch').forEach(s => s.classList.toggle('active', s === sw));
-    };
-  });
-
-  const durRow = document.getElementById('statusDurationRow');
-  durRow.innerHTML = STATUS_DURATIONS.map(h => `<button type="button" class="status-duration-btn${h===24?' active':''}" data-hours="${h}">${toBn(h)} ঘণ্টা</button>`).join('');
-  durRow.querySelectorAll('.status-duration-btn').forEach(btn => {
-    btn.onclick = () => {
-      statusSelectedDuration = +btn.getAttribute('data-hours');
-      durRow.querySelectorAll('.status-duration-btn').forEach(b => b.classList.toggle('active', b === btn));
-    };
-  });
-
-  const surahSelect = document.getElementById('statusSurahSelect');
-  surahSelect.innerHTML = surahNamesBn.map((name, i) => `<option value="${i+1}">${toBn(i+1)}. ${escapeHtml(name)}</option>`).join('');
-  surahSelect.addEventListener('change', () => updateStatusAyahHint());
-
-  const reciterSelect = document.getElementById('statusReciterSelect');
-  reciterSelect.innerHTML = reciters.map(r => `<option value="${r.id}">${escapeHtml(r.bn || r.name)}</option>`).join('');
-
-  document.getElementById('statusRandomAyahBtn').onclick = fillRandomStatusAyah;
-  document.getElementById('statusSubmitBtn').onclick = submitStatus;
-
-  updateStatusAyahHint();
-  return el;
-}
-
-function switchStatusType(type){
-  document.getElementById('statusTypeTextBtn').classList.toggle('active', type === 'text');
-  document.getElementById('statusTypeAyahBtn').classList.toggle('active', type === 'ayah');
-  document.getElementById('statusFormText').style.display = type === 'text' ? 'block' : 'none';
-  document.getElementById('statusFormAyah').style.display = type === 'ayah' ? 'block' : 'none';
-  document.getElementById('statusComposer').setAttribute('data-active-type', type);
-}
-
-async function updateStatusAyahHint(){
-  const surah = +document.getElementById('statusSurahSelect').value;
-  const hintEl = document.getElementById('statusAyahHint');
-  const ayahInput = document.getElementById('statusAyahInput');
-  if(statusSurahMetaCache[surah]){
-    ayahInput.max = statusSurahMetaCache[surah];
-    hintEl.textContent = `সূরা ${surahNamesBn[surah-1] || ''} — সর্বোচ্চ ${toBn(statusSurahMetaCache[surah])} আয়াত`;
-    return;
-  }
-  hintEl.textContent = 'লোড হচ্ছে...';
-  try{
-    const res = await fetch(`${API}/surah/${surah}`);
-    const json = await res.json();
-    const total = json.data && json.data.numberOfAyahs;
-    if(total){
-      statusSurahMetaCache[surah] = total;
-      ayahInput.max = total;
-      hintEl.textContent = `সূরা ${surahNamesBn[surah-1] || ''} — সর্বোচ্চ ${toBn(total)} আয়াত`;
-    }
-  }catch(e){ hintEl.textContent = ''; }
-}
-
-async function fillRandomStatusAyah(){
-  const btn = document.getElementById('statusRandomAyahBtn');
-  btn.disabled = true;
-  try{
-    const g = 1 + Math.floor(Math.random() * STATUS_TOTAL_AYAHS);
-    const res = await fetch(`${API}/ayah/${g}/quran-uthmani`);
-    const json = await res.json();
-    if(json.data){
-      document.getElementById('statusSurahSelect').value = json.data.surah.number;
-      document.getElementById('statusAyahInput').value = json.data.numberInSurah;
-      await updateStatusAyahHint();
-    }
-  }catch(e){ showToast('এলোমেলো আয়াত আনা যায়নি'); }
-  btn.disabled = false;
-}
-
-function openStatusComposer(){
   if(!state.user){
-    showToast('স্ট্যাটাস দিতে প্রথমে সাইন ইন করুন');
-    if(typeof openAuthFlow === 'function') openAuthFlow('login');
+    wrap.innerHTML = `
+      <button type="button" class="status-locked-bar" id="statusLockedBar">
+        <div class="status-locked-ic"><i class="fa-solid fa-circle-user"></i></div>
+        <div class="status-locked-text">
+          <div class="status-locked-title">স্ট্যাটাস দেখতে সাইন ইন করুন</div>
+          <div class="status-locked-sub">অন্যদের স্ট্যাটাস দেখতে ও নিজে স্ট্যাটাস দিতে অ্যাকাউন্ট প্রয়োজন</div>
+        </div>
+        <i class="fa-solid fa-chevron-left"></i>
+      </button>`;
+    const bar = document.getElementById('statusLockedBar');
+    if(bar) bar.onclick = () => openAuthFlow('choice');
     return;
   }
-  // এডমিন প্যানেল থেকে "সীমিত"/"ব্লক" করা অ্যাকাউন্ট নতুন স্টোরি পোস্ট
-  // করতে পারবে না (Firestore rules-এও একই শর্ত সার্ভার-সাইডে বাধ্যতামূলক)।
-  if(state.user.status === 'restricted' || state.user.status === 'blocked'){
-    showToast(
-      state.user.statusReason
-        ? `আপনার অ্যাকাউন্ট সীমিত অবস্থায় আছে — নতুন স্টোরি পোস্ট করা যাবে না: ${state.user.statusReason}`
-        : 'আপনার অ্যাকাউন্ট সীমিত অবস্থায় আছে — নতুন স্টোরি পোস্ট করা যাবে না।',
-      'error'
-    );
-    return;
+
+  if(!document.getElementById('statusRowInner')){
+    wrap.innerHTML = `<div class="status-row" id="statusRowInner"></div>`;
   }
-  const el = ensureStatusComposer();
-  switchStatusType('text');
-  document.getElementById('statusTextInput').value = '';
-  document.getElementById('statusCharCount').textContent = '0';
-  statusSelectedDuration = 24;
-  el.querySelectorAll('.status-duration-btn').forEach(b => b.classList.toggle('active', +b.getAttribute('data-hours') === 24));
-  el.style.display = 'flex';
-  document.body.style.overflow = 'hidden';
+  renderStatusRowFromCache();
+
+  const fresh = (Date.now() - statusRowFetchedAt) < STATUS_ROW_CACHE_MS;
+  if(!fresh && !statusRowLoading && typeof fbDb !== 'undefined' && firebaseReady){
+    statusRowLoading = true;
+    fetchAndGroupStatuses().then(groups => {
+      statusGroupsCache = groups;
+      statusRowFetchedAt = Date.now();
+      renderStatusRowFromCache();
+    }).finally(() => { statusRowLoading = false; });
+  }
 }
+
+function fetchAndGroupStatuses(){
+  if(!firebaseReady || typeof fbDb === 'undefined' || !fbDb || !state.user) return Promise.resolve(statusGroupsCache);
+  const now = Date.now();
+  return fbDb.collection('statuses')
+    .where('expiresAt', '>', now)
+    .orderBy('expiresAt', 'asc')
+    .get()
+    .then(snap => {
+      const byUid = {};
+      snap.forEach(docSnap => {
+        const d = docSnap.data() || {};
+        if(!d.uid || !d.createdAt) return;
+        if(!byUid[d.uid]) byUid[d.uid] = { uid:d.uid, name:d.name||'ব্যবহারকারী', avatarColor:d.avatarColor||'', avatarIcon:d.avatarIcon||'', items:[], _latestAt:0 };
+        byUid[d.uid].items.push(Object.assign({ id: docSnap.id }, d));
+        if(d.createdAt >= byUid[d.uid]._latestAt){
+          byUid[d.uid]._latestAt = d.createdAt;
+          byUid[d.uid].name = d.name || byUid[d.uid].name;
+          byUid[d.uid].avatarColor = d.avatarColor || byUid[d.uid].avatarColor;
+          byUid[d.uid].avatarIcon = d.avatarIcon || byUid[d.uid].avatarIcon;
+        }
+      });
+      const groups = Object.values(byUid);
+      groups.forEach(g => { g.items.sort((a,b) => a.createdAt - b.createdAt); delete g._latestAt; });
+      return groups;
+    })
+    .catch(err => { console.warn('status row fetch failed:', err); return statusGroupsCache; });
+}
+
+function renderStatusRowFromCache(){
+  const inner = document.getElementById('statusRowInner');
+  if(!inner || !state.user) return;
+  const seen = getSeenStatusIds();
+  const myUid = state.user.uid;
+
+  function groupHasUnseen(g){ return g.items.some(it => !seen.has(it.id)); }
+  function groupLatest(g){ return g.items.length ? g.items[g.items.length - 1].createdAt : 0; }
+
+  const selfGroup = statusGroupsCache.find(g => g.uid === myUid) || null;
+  const others = statusGroupsCache.filter(g => g.uid !== myUid);
+  const unseenGroups = others.filter(groupHasUnseen).sort((a,b) => groupLatest(b) - groupLatest(a));
+  const seenGroups = others.filter(g => !groupHasUnseen(g)).sort((a,b) => groupLatest(b) - groupLatest(a));
+  const orderedOthers = unseenGroups.concat(seenGroups);
+  const allGroups = (selfGroup ? [selfGroup] : []).concat(orderedOthers);
+
+  let html = '';
+  if(selfGroup && selfGroup.items.length){
+    const hasUnseen = groupHasUnseen(selfGroup);
+    html += `
+      <button type="button" class="status-item self ${hasUnseen ? 'has-unseen' : 'all-seen'}" id="statusSelfItem">
+        <div class="status-ring"><div class="status-avatar" style="background:${selfGroup.avatarColor || PROFILE_AVATAR_COLORS[0]}">
+          ${avatarGlyph({ name: selfGroup.name, avatarIcon: selfGroup.avatarIcon })}
+          <span class="status-plus-badge" id="statusSelfPlusBadge"><i class="fa-solid fa-plus"></i></span>
+        </div></div>
+        <div class="status-label">আমার স্ট্যাটাস</div>
+      </button>`;
+  } else {
+    html += `
+      <button type="button" class="status-item self" id="statusSelfItem">
+        <div class="status-ring"><div class="status-avatar" style="background:${state.user.avatarColor || PROFILE_AVATAR_COLORS[0]}">
+          ${avatarGlyph(state.user)}
+          <span class="status-plus-badge" id="statusSelfPlusBadge"><i class="fa-solid fa-plus"></i></span>
+        </div></div>
+        <div class="status-label">আমার স্ট্যাটাস</div>
+      </button>`;
+  }
+
+  orderedOthers.forEach(g => {
+    const hasUnseen = groupHasUnseen(g);
+    const firstName = (g.name || 'ব্যবহারকারী').trim().split(/\s+/)[0];
+    html += `
+      <button type="button" class="status-item ${hasUnseen ? 'has-unseen' : 'all-seen'}" data-uid="${g.uid}">
+        <div class="status-ring"><div class="status-avatar" style="background:${g.avatarColor || PROFILE_AVATAR_COLORS[0]}">
+          ${avatarGlyph({ name: g.name, avatarIcon: g.avatarIcon })}
+        </div></div>
+        <div class="status-label">${escapeHtml(firstName)}</div>
+      </button>`;
+  });
+
+  inner.innerHTML = html;
+
+  const selfBtn = document.getElementById('statusSelfItem');
+  if(selfBtn){
+    selfBtn.onclick = () => {
+      if(selfGroup && selfGroup.items.length) openStatusViewer(allGroups, 0, 0);
+      else openStatusComposer('text');
+    };
+  }
+  const plusBadge = document.getElementById('statusSelfPlusBadge');
+  if(plusBadge){
+    plusBadge.onclick = (e) => { e.stopPropagation(); openStatusComposer('text'); };
+  }
+  inner.querySelectorAll('.status-item:not(.self)').forEach(btn => {
+    btn.onclick = () => {
+      const uid = btn.getAttribute('data-uid');
+      const idx = allGroups.findIndex(g => g.uid === uid);
+      if(idx === -1) return;
+      openStatusViewer(allGroups, idx, 0);
+    };
+  });
+}
+
+// ==================================================================
+// Composer (post a text or photo status)
+// ==================================================================
+function ensureStatusComposerOverlay(){
+  let ov = document.getElementById('statusComposerOverlay');
+  if(ov) return ov;
+  ov = document.createElement('div');
+  ov.id = 'statusComposerOverlay';
+  ov.className = 'status-overlay';
+  ov.innerHTML = `
+    <div class="status-comp-topbar">
+      <button type="button" class="status-comp-close" id="statusCompClose"><i class="fa-solid fa-xmark"></i></button>
+      <div class="status-comp-tools">
+        <button type="button" class="status-comp-tool-btn" id="statusCompFontBtn">Aa</button>
+        <label class="status-comp-tool-btn" id="statusCompImageBtn">
+          <i class="fa-solid fa-image"></i>
+          <input type="file" accept="image/*" id="statusCompFileInput" style="display:none;">
+        </label>
+      </div>
+    </div>
+    <div class="status-comp-stage" id="statusCompStage"></div>
+    <div class="status-comp-colors" id="statusCompColors"></div>
+    <div class="status-comp-bottombar">
+      <button type="button" class="status-comp-send" id="statusCompSend"><i class="fa-solid fa-check"></i></button>
+    </div>`;
+  document.body.appendChild(ov);
+
+  document.getElementById('statusCompClose').onclick = closeStatusComposer;
+  document.getElementById('statusCompSend').onclick = submitStatus;
+  document.getElementById('statusCompFontBtn').onclick = () => {
+    statusComposerState.fontIndex = (statusComposerState.fontIndex + 1) % STATUS_FONTS.length;
+    applyStatusComposerFont();
+  };
+  document.getElementById('statusCompFileInput').addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if(file) handleStatusImagePick(file);
+    e.target.value = '';
+  });
+
+  const colorsWrap = document.getElementById('statusCompColors');
+  colorsWrap.innerHTML = STATUS_BG_COLORS.map((c,i) => `<button type="button" class="status-comp-color-dot" data-i="${i}" style="background:${c}"></button>`).join('');
+  colorsWrap.querySelectorAll('.status-comp-color-dot').forEach(btn => {
+    btn.onclick = () => {
+      statusComposerState.colorIndex = parseInt(btn.getAttribute('data-i'), 10) || 0;
+      const stage = document.getElementById('statusCompStage');
+      if(stage && statusComposerState.mode === 'text') stage.style.background = STATUS_BG_COLORS[statusComposerState.colorIndex];
+      colorsWrap.querySelectorAll('.status-comp-color-dot').forEach((el,i) => el.classList.toggle('active', i === statusComposerState.colorIndex));
+    };
+  });
+
+  return ov;
+}
+
+function applyStatusComposerFont(){
+  const ta = document.getElementById('statusCompTextarea');
+  if(!ta) return;
+  const f = STATUS_FONTS[statusComposerState.fontIndex];
+  ta.style.fontFamily = f.family;
+  ta.style.fontWeight = f.weight || 600;
+  ta.style.textTransform = f.upper ? 'uppercase' : 'none';
+}
+
+function openStatusComposer(mode){
+  if(!state.user){ if(typeof openAuthFlow === 'function') openAuthFlow('choice'); return; }
+  ensureStatusComposerOverlay();
+  statusComposerState = {
+    mode: 'text',
+    colorIndex: Math.floor(Math.random() * STATUS_BG_COLORS.length),
+    fontIndex: 0, imageDataUrl: null, textValue: '', captionText: '', sending: false
+  };
+  renderComposerStage();
+  document.getElementById('statusComposerOverlay').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  if(mode === 'image'){
+    const fi = document.getElementById('statusCompFileInput');
+    if(fi) fi.click();
+  }
+}
+
 function closeStatusComposer(){
-  const el = document.getElementById('statusComposer');
-  if(el) el.style.display = 'none';
+  const ov = document.getElementById('statusComposerOverlay');
+  if(ov) ov.classList.remove('open');
   document.body.style.overflow = '';
 }
 
-async function submitStatus(){
-  if(!state.user){ openStatusComposer(); return; }
-  if(state.user.status === 'restricted' || state.user.status === 'blocked'){ openStatusComposer(); return; }
-  // Re-verified against the actual signed-in Firebase user right before the
-  // write (not just the cached state.user object) — the rules require
-  // request.resource.data.uid to match request.auth.uid exactly, so this
-  // catches a stale/expired/remote-logged-out session before it can produce
-  // a confusing permission-denied deep inside postStatusDoc.
-  const fbUser = (typeof fbAuth !== 'undefined' && fbAuth) ? fbAuth.currentUser : null;
-  if(!fbUser || fbUser.uid !== state.user.uid){
-    showToast('সেশন শেষ হয়ে গেছে — আবার সাইন ইন করুন');
-    if(typeof openAuthFlow === 'function') openAuthFlow('login');
-    return;
-  }
-  if(navigator.onLine === false){
-    showToast('ইন্টারনেট সংযোগ নেই — সংযোগ ফিরে এলে আবার চেষ্টা করুন');
-    return;
-  }
-  const type = document.getElementById('statusComposer').getAttribute('data-active-type') || 'text';
-  const btn = document.getElementById('statusSubmitBtn');
-  btn.disabled = true;
-  try{
-    if(type === 'text'){
-      const text = document.getElementById('statusTextInput').value.trim();
-      if(!text){ showToast('কিছু একটা লিখুন'); btn.disabled = false; return; }
-      await postStatusDoc(fbUser, { type: 'text', text, bg: statusSelectedBg });
-    } else {
-      const surah = +document.getElementById('statusSurahSelect').value;
-      const ayahNum = +document.getElementById('statusAyahInput').value;
-      const reciterId = document.getElementById('statusReciterSelect').value;
-      if(!surah || !ayahNum || ayahNum < 1){ showToast('সূরা ও আয়াত নম্বর সঠিকভাবে দিন'); btn.disabled = false; return; }
-      const [arRes, trRes] = await Promise.all([
-        fetch(`${API}/ayah/${surah}:${ayahNum}/quran-uthmani`),
-        fetch(`${API}/ayah/${surah}:${ayahNum}/${state.translationEdition || 'bn.bengali'}`)
-      ]);
-      const arJson = await arRes.json();
-      const trJson = await trRes.json();
-      // arJson.data.text feeds straight into the `arabic` field below — the
-      // Firestore SDK throws client-side (before even reaching the rules)
-      // if any field is undefined, so this must be verified up front rather
-      // than only checking arJson.code/data.
-      if(arJson.code !== 200 || !arJson.data || !arJson.data.text){ throw new Error('invalid ayah'); }
-      const r = reciters.find(x => x.id === reciterId);
-      await postStatusDoc(fbUser, {
-        type: 'ayah', surah, ayah: ayahNum,
-        surahName: surahNamesBn[surah-1] || (arJson.data.surah && arJson.data.surah.englishName) || '',
-        arabic: arJson.data.text,
-        translation: (trJson.data && trJson.data.text) || '',
-        reciter: reciterId, reciterName: (r && r.bn) || (r && r.name) || '',
-        audioUrl: buildAudioUrl(reciterId, surah, arJson.data.number)
-      });
+function renderComposerStage(){
+  const stage = document.getElementById('statusCompStage');
+  const colorsWrap = document.getElementById('statusCompColors');
+  const fontBtn = document.getElementById('statusCompFontBtn');
+  if(!stage) return;
+
+  if(statusComposerState.mode === 'image' && statusComposerState.imageDataUrl){
+    stage.style.background = '#000';
+    stage.innerHTML = `
+      <img class="status-comp-preview-img" src="${statusComposerState.imageDataUrl}">
+      <div class="status-comp-caption"><input type="text" id="statusCompCaptionInput" maxlength="200" placeholder="ক্যাপশন যোগ করুন..."></div>`;
+    const capInput = document.getElementById('statusCompCaptionInput');
+    capInput.value = statusComposerState.captionText || '';
+    capInput.oninput = () => { statusComposerState.captionText = capInput.value; };
+    if(colorsWrap) colorsWrap.style.display = 'none';
+    if(fontBtn) fontBtn.style.display = 'none';
+  } else {
+    statusComposerState.mode = 'text';
+    stage.style.background = STATUS_BG_COLORS[statusComposerState.colorIndex];
+    stage.innerHTML = `<textarea class="status-comp-textarea" id="statusCompTextarea" maxlength="700" placeholder="একটি স্ট্যাটাস লিখুন..."></textarea>`;
+    const ta = document.getElementById('statusCompTextarea');
+    ta.value = statusComposerState.textValue || '';
+    ta.oninput = () => { statusComposerState.textValue = ta.value; };
+    applyStatusComposerFont();
+    setTimeout(() => { try{ ta.focus(); }catch(e){} }, 60);
+    if(colorsWrap){
+      colorsWrap.style.display = 'flex';
+      colorsWrap.querySelectorAll('.status-comp-color-dot').forEach((el,i) => el.classList.toggle('active', i === statusComposerState.colorIndex));
     }
-    closeStatusComposer();
-    showToast('স্ট্যাটাস পোস্ট করা হয়েছে');
-  }catch(e){
-    showToast(statusPostErrorMessage(e));
+    if(fontBtn) fontBtn.style.display = 'flex';
   }
-  btn.disabled = false;
 }
 
-// This project has no Firestore offline persistence enabled (js/idb.js is a
-// separate, app-owned IndexedDB store — see its own file header), so a
-// write attempted while offline would otherwise hang the submit button
-// indefinitely instead of failing visibly. Wrapping the write in a timeout
-// guarantees the UI always recovers and tells the user what to do next; the
-// underlying write is harmless to abandon since Firestore will still retry
-// it in the background once connectivity returns.
-const STATUS_TIMEOUT_ERR = { code: 'status/timeout' };
-function withTimeout(promise, ms, timeoutError){
+function handleStatusImagePick(file){
+  if(!file || !file.type || file.type.indexOf('image/') !== 0){ showToast('একটি ছবি বাছুন'); return; }
+  compressImageFile(file, 1080, 0.72).then(dataUrl => {
+    statusComposerState.mode = 'image';
+    statusComposerState.imageDataUrl = dataUrl;
+    renderComposerStage();
+  }).catch(() => showToast('ছবি লোড করা যায়নি'));
+}
+
+function compressImageFile(file, maxDim, quality){
   return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(timeoutError), ms);
-    promise.then(v => { clearTimeout(t); resolve(v); }, e => { clearTimeout(t); reject(e); });
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('read-failed'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('image-decode-failed'));
+      img.onload = () => {
+        let width = img.naturalWidth, height = img.naturalHeight;
+        if(width > maxDim || height > maxDim){
+          if(width >= height){ height = Math.round(height * (maxDim / width)); width = maxDim; }
+          else { width = Math.round(width * (maxDim / height)); height = maxDim; }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        try{ resolve(canvas.toDataURL('image/jpeg', quality)); }
+        catch(e){ reject(e); }
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
   });
 }
 
-// One specific, actionable Bengali message per failure reason instead of a
-// single generic one — matches exactly what firestore_rules.txt actually
-// enforces for the `statuses` collection (see the rule excerpt at the top
-// of this file), so whichever branch rejected the write, the user is told
-// something they can actually act on.
-function statusPostErrorMessage(e){
-  if(e === STATUS_TIMEOUT_ERR) return 'পোস্ট করতে দেরি হচ্ছে — ইন্টারনেট সংযোগ পরীক্ষা করে আবার চেষ্টা করুন';
-  const code = e && e.code;
-  if(code === 'permission-denied'){
-    return (state.user && (state.user.status === 'restricted' || state.user.status === 'blocked'))
-      ? 'আপনার অ্যাকাউন্ট সীমিত অবস্থায় আছে — নতুন স্টোরি পোস্ট করা যাবে না।'
-      : 'পোস্ট করার অনুমতি নেই — আবার সাইন ইন করে চেষ্টা করুন';
-  }
-  if(code === 'unavailable') return 'সার্ভারের সাথে সংযোগ করা যায়নি — ইন্টারনেট সংযোগ পরীক্ষা করুন';
-  if(e && e.message === 'invalid ayah') return 'এই আয়াত নম্বরটি সঠিক নয় — যাচাই করে আবার চেষ্টা করুন';
-  return 'স্ট্যাটাস পোস্ট করা যায়নি — আয়াত নম্বর যাচাই করুন বা আবার চেষ্টা করুন';
-}
+function submitStatus(){
+  if(!state.user || statusComposerState.sending) return;
+  const sendBtn = document.getElementById('statusCompSend');
+  let payload;
 
-async function postStatusDoc(fbUser, payload){
+  if(statusComposerState.mode === 'image'){
+    if(!statusComposerState.imageDataUrl){ showToast('একটি ছবি বাছুন'); return; }
+    if(statusComposerState.imageDataUrl.length > 900000){ showToast('ছবিটি অনেক বড়, ছোট আকারের একটি ছবি দিন'); return; }
+    payload = { type:'image', imageData: statusComposerState.imageDataUrl, text:(statusComposerState.captionText||'').trim().slice(0,200) };
+  } else {
+    const txt = (statusComposerState.textValue || '').trim();
+    if(!txt){ showToast('কিছু লিখুন'); return; }
+    payload = { type:'text', text: txt.slice(0,700), bgIndex: statusComposerState.colorIndex, font: STATUS_FONTS[statusComposerState.fontIndex].id };
+  }
+
+  statusComposerState.sending = true;
+  if(sendBtn){ sendBtn.disabled = true; sendBtn.classList.add('busy'); sendBtn.innerHTML = '<i class="fa-solid fa-circle-notch"></i>'; }
+
   const now = Date.now();
   const doc = Object.assign({
-    // uid comes from the live Firebase user object passed in by
-    // submitStatus, not state.user — guarantees an exact match with
-    // request.auth.uid under the Firestore rule, every single time.
-    uid: fbUser.uid,
+    uid: state.user.uid,
     name: state.user.name || 'ব্যবহারকারী',
     avatarColor: state.user.avatarColor || '',
     avatarIcon: state.user.avatarIcon || '',
     createdAt: now,
-    expiresAt: now + statusSelectedDuration * 3600 * 1000,
-    viewers: {},
-    reactions: {}
+    expiresAt: now + STATUS_TTL_MS,
+    viewCount: 0
   }, payload);
-  await withTimeout(fbDb.collection('statuses').add(doc), 20000, STATUS_TIMEOUT_ERR);
-}
 
-// ================= Story viewer =================
-function ensureStatusViewer(){
-  let el = document.getElementById('statusViewer');
-  if(el) return el;
-  el = document.createElement('div');
-  el.id = 'statusViewer';
-  el.className = 'status-viewer';
-  el.style.display = 'none';
-  el.innerHTML = `
-    <div class="status-viewer-progress" id="statusViewerProgress"></div>
-    <div class="status-viewer-header">
-      <span class="status-viewer-avatar" id="statusViewerAvatar"></span>
-      <div class="status-viewer-who">
-        <span class="status-viewer-name" id="statusViewerName"></span>
-        <span class="status-viewer-time" id="statusViewerTime"></span>
-      </div>
-      <button type="button" class="status-viewer-icon-btn" id="statusViewerDeleteBtn" style="display:none;" title="মুছে ফেলুন"><i class="fa-solid fa-trash"></i></button>
-      <button type="button" class="status-viewer-icon-btn" id="statusViewerCloseBtn" title="বন্ধ করুন"><i class="fa-solid fa-xmark"></i></button>
-    </div>
-    <div class="status-viewer-body" id="statusViewerBody"></div>
-    <div class="status-viewer-zone status-viewer-zone-left" id="statusViewerPrevZone"></div>
-    <div class="status-viewer-zone status-viewer-zone-right" id="statusViewerNextZone"></div>
-    <div class="status-viewer-footer" id="statusViewerFooter"></div>
-  `;
-  document.body.appendChild(el);
-
-  document.getElementById('statusViewerCloseBtn').onclick = closeStatusViewer;
-  document.getElementById('statusViewerDeleteBtn').onclick = deleteCurrentStatus;
-  document.getElementById('statusViewerPrevZone').onclick = () => statusStepSlide(-1);
-  document.getElementById('statusViewerNextZone').onclick = () => statusStepSlide(1);
-
-  ['statusViewerPrevZone', 'statusViewerNextZone'].forEach(id => {
-    const zone = document.getElementById(id);
-    zone.addEventListener('pointerdown', () => {
-      statusHoldTimer = setTimeout(() => pauseStatusSlide(), 180);
-    });
-    const release = () => { clearTimeout(statusHoldTimer); if(statusIsPaused) resumeStatusSlide(); };
-    zone.addEventListener('pointerup', release);
-    zone.addEventListener('pointerleave', release);
+  fbDb.collection('statuses').add(doc).then(() => {
+    showToast('স্ট্যাটাস আপলোড হয়েছে');
+    closeStatusComposer();
+    statusRowFetchedAt = 0;
+    renderStatusRow();
+  }).catch(err => {
+    console.warn('status upload failed:', err);
+    showToast('স্ট্যাটাস আপলোড করা যায়নি, আবার চেষ্টা করুন');
+  }).finally(() => {
+    statusComposerState.sending = false;
+    if(sendBtn){ sendBtn.disabled = false; sendBtn.classList.remove('busy'); sendBtn.innerHTML = '<i class="fa-solid fa-check"></i>'; }
   });
-
-  return el;
 }
 
-function openStatusViewer(groupIdx){
-  ensureStatusViewer();
-  statusViewerIdx = groupIdx;
-  const group = statusGroups[groupIdx];
-  if(!group) return;
-  const seen = getSeenStatusIds();
-  const firstUnseen = group.items.findIndex(s => !seen.includes(s.id));
-  statusSlideIdx = firstUnseen !== -1 ? firstUnseen : 0;
-  document.getElementById('statusViewer').style.display = 'block';
+// ==================================================================
+// Full-screen story viewer
+// ==================================================================
+function ensureStatusViewerOverlay(){
+  let ov = document.getElementById('statusViewerOverlay');
+  if(ov) return ov;
+  ov = document.createElement('div');
+  ov.id = 'statusViewerOverlay';
+  ov.className = 'status-overlay';
+  ov.innerHTML = `
+    <div class="status-view-progress-row" id="statusViewProgressRow"></div>
+    <div class="status-view-header">
+      <div class="status-view-avatar" id="statusViewAvatar"></div>
+      <div class="status-view-who">
+        <div class="status-view-name" id="statusViewName"></div>
+        <div class="status-view-time" id="statusViewTime"></div>
+      </div>
+      <button type="button" class="status-view-header-btn" id="statusViewDeleteBtn" style="display:none;"><i class="fa-solid fa-trash"></i></button>
+      <button type="button" class="status-view-header-btn" id="statusViewCloseBtn"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+    <div class="status-view-stage" id="statusViewStage">
+      <div class="status-view-tap-zone left" id="statusViewTapLeft"></div>
+      <div class="status-view-tap-zone right" id="statusViewTapRight"></div>
+      <div id="statusViewItems"></div>
+    </div>
+    <div class="status-view-footer" id="statusViewFooter" style="display:none;">
+      <button type="button" class="status-view-viewers-btn" id="statusViewViewersBtn">
+        <i class="fa-solid fa-eye"></i><span id="statusViewViewersCount">০</span>&nbsp;জন দেখেছে
+      </button>
+    </div>`;
+  document.body.appendChild(ov);
+
+  document.getElementById('statusViewCloseBtn').onclick = closeStatusViewer;
+  document.getElementById('statusViewDeleteBtn').onclick = confirmDeleteCurrentStatusItem;
+  document.getElementById('statusViewViewersBtn').onclick = openStatusViewersSheet;
+
+  attachStatusTapZone(document.getElementById('statusViewTapLeft'), goToPrevStatusItem);
+  attachStatusTapZone(document.getElementById('statusViewTapRight'), goToNextStatusItem);
+
+  // Swipe down anywhere on the stage to close, WhatsApp-style.
+  const stage = document.getElementById('statusViewStage');
+  let touchStartY = null;
+  stage.addEventListener('touchstart', (e) => { touchStartY = e.touches[0].clientY; }, { passive:true });
+  stage.addEventListener('touchend', (e) => {
+    if(touchStartY == null) return;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    touchStartY = null;
+    if(dy > 90) closeStatusViewer();
+  }, { passive:true });
+
+  return ov;
+}
+
+// A short press advances; holding the finger/pointer down pauses the
+// current item (like a long-press on a WhatsApp status) and a plain
+// release afterwards just resumes it without navigating.
+function attachStatusTapZone(zone, onTap){
+  if(!zone) return;
+  let holdTimeout = null, holdActive = false;
+  zone.addEventListener('pointerdown', () => {
+    holdActive = false;
+    clearTimeout(holdTimeout);
+    holdTimeout = setTimeout(() => { holdActive = true; pauseStatusItemTimer(); }, 180);
+  });
+  const release = () => {
+    clearTimeout(holdTimeout);
+    if(holdActive){ holdActive = false; resumeStatusItemTimer(); }
+    else onTap();
+  };
+  zone.addEventListener('pointerup', release);
+  zone.addEventListener('pointercancel', () => { clearTimeout(holdTimeout); if(holdActive){ holdActive = false; resumeStatusItemTimer(); } });
+}
+
+function openStatusViewer(groups, groupIndex, itemIndex){
+  if(!state.user){ if(typeof openAuthFlow === 'function') openAuthFlow('choice'); return; }
+  if(!groups || !groups.length) return;
+  ensureStatusViewerOverlay();
+  statusViewerState.open = true;
+  statusViewerState.groups = groups;
+  statusViewerState.groupIndex = groupIndex || 0;
+  statusViewerState.itemIndex = itemIndex || 0;
+  document.getElementById('statusViewerOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
-  renderStatusSlide();
+  renderStatusViewerGroup();
 }
 
 function closeStatusViewer(){
-  clearStatusTimer();
-  if(statusAudioEl){ statusAudioEl.pause(); statusAudioEl = null; }
-  const viewersPanel = document.getElementById('statusViewersPanel');
-  if(viewersPanel) viewersPanel.style.display = 'none';
-  const el = document.getElementById('statusViewer');
-  if(el) el.style.display = 'none';
+  stopStatusItemTimer();
+  statusViewerState.open = false;
+  const ov = document.getElementById('statusViewerOverlay');
+  if(ov) ov.classList.remove('open');
   document.body.style.overflow = '';
-  statusViewerIdx = -1;
-  groupStatuses();
-  renderStatusBar();
+  closeStatusViewersSheet();
+  renderStatusRowFromCache(); // reflect newly-seen items in the row's ring colors
 }
 
-function clearStatusTimer(){
-  if(statusSlideTimer){ clearTimeout(statusSlideTimer); statusSlideTimer = null; }
-  statusIsPaused = false;
+function renderStatusViewerGroup(){
+  const group = statusViewerState.groups[statusViewerState.groupIndex];
+  if(!group || !group.items.length){ closeStatusViewer(); return; }
+
+  const avatarEl = document.getElementById('statusViewAvatar');
+  avatarEl.style.background = group.avatarColor || PROFILE_AVATAR_COLORS[0];
+  avatarEl.innerHTML = avatarGlyph({ name: group.name, avatarIcon: group.avatarIcon });
+  const isOwn = group.uid === state.user.uid;
+  document.getElementById('statusViewName').textContent = isOwn ? 'আমার স্ট্যাটাস' : (group.name || 'ব্যবহারকারী');
+
+  document.getElementById('statusViewProgressRow').innerHTML =
+    group.items.map(() => `<div class="status-view-progress-track"><div class="status-view-progress-fill"></div></div>`).join('');
+
+  document.getElementById('statusViewItems').innerHTML = group.items.map((it,i) => statusViewItemHtml(it,i)).join('');
+
+  document.getElementById('statusViewDeleteBtn').style.display = isOwn ? 'flex' : 'none';
+  document.getElementById('statusViewFooter').style.display = isOwn ? 'flex' : 'none';
+
+  showStatusViewerItem(statusViewerState.itemIndex);
 }
 
-function renderStatusSlide(){
-  const group = statusGroups[statusViewerIdx];
-  if(!group){ closeStatusViewer(); return; }
-  if(statusSlideIdx < 0) statusSlideIdx = 0;
-  if(statusSlideIdx >= group.items.length){ statusStepGroup(1); return; }
-  const item = group.items[statusSlideIdx];
-
-  const viewersPanel = document.getElementById('statusViewersPanel');
-  if(viewersPanel) viewersPanel.style.display = 'none';
-  clearStatusTimer();
-  if(statusAudioEl){ statusAudioEl.pause(); statusAudioEl = null; }
-
-  // Progress bar segments
-  const progWrap = document.getElementById('statusViewerProgress');
-  progWrap.innerHTML = group.items.map((_, i) => `<span class="status-progress-seg"><span class="status-progress-fill${i < statusSlideIdx ? ' full' : ''}" id="statusProgFill${i}"></span></span>`).join('');
-
-  // Header
-  document.getElementById('statusViewerAvatar').innerHTML = statusAvatarHtml(group).replace('status-ring-avatar', 'status-ring-avatar status-viewer-avatar-inner');
-  const isMine = state.user && state.user.uid === item.uid;
-  document.getElementById('statusViewerName').textContent = isMine ? 'আপনি' : (group.name || 'ব্যবহারকারী');
-  document.getElementById('statusViewerTime').textContent = timeAgoBn(item.createdAt || Date.now());
-  document.getElementById('statusViewerDeleteBtn').style.display = isMine ? 'flex' : 'none';
-
-  // Body
-  const body = document.getElementById('statusViewerBody');
-  if(item.type === 'ayah'){
-    body.innerHTML = `
-      <div class="status-slide status-slide-ayah">
-        <div class="status-ayah-badge"><i class="fa-solid fa-book-quran"></i> সূরা ${escapeHtml(item.surahName || '')} · আয়াত ${toBn(item.ayah)}</div>
-        <div class="status-slide-arabic" dir="rtl">${escapeHtml(item.arabic || '')}</div>
-        <div class="status-slide-translation">${escapeHtml(item.translation || '')}</div>
-        <div class="status-ayah-reciter"><i class="fa-solid fa-volume-high"></i> ${escapeHtml(item.reciterName || '')}</div>
-      </div>`;
-    statusAudioEl = new Audio(item.audioUrl);
-    statusAudioEl.play().catch(() => {});
-    statusAudioEl.addEventListener('timeupdate', () => {
-      if(!statusAudioEl || !statusAudioEl.duration) return;
-      const fill = document.getElementById('statusProgFill' + statusSlideIdx);
-      if(fill) fill.style.width = Math.min(100, (statusAudioEl.currentTime / statusAudioEl.duration) * 100) + '%';
-    });
-    statusAudioEl.addEventListener('ended', () => statusStepSlide(1));
-    // Fallback in case the audio never loads (offline, bad link, etc.)
-    statusSlideTimer = setTimeout(() => statusStepSlide(1), 25000);
-  } else {
-    body.innerHTML = `
-      <div class="status-slide status-slide-text" style="background:${item.bg || STATUS_BG_PRESETS[0]}">
-        <p>${escapeHtml(item.text || '')}</p>
-      </div>`;
-    const fill = document.getElementById('statusProgFill' + statusSlideIdx);
-    if(fill){
-      fill.style.transition = `width ${STATUS_TEXT_MS}ms linear`;
-      requestAnimationFrame(() => { fill.style.width = '100%'; });
-    }
-    statusSlideTimer = setTimeout(() => statusStepSlide(1), STATUS_TEXT_MS);
-  }
-
-  renderStatusFooter(item, isMine);
-  markStatusViewed(item);
-}
-
-// ================= Footer: view count (owner) + love react (everyone else) =================
-function statusViewCount(item){
-  return item.viewers ? Object.keys(item.viewers).length : 0;
-}
-function statusReactionCount(item){
-  return item.reactions ? Object.keys(item.reactions).length : 0;
-}
-
-function renderStatusFooter(item, isMine){
-  const footer = document.getElementById('statusViewerFooter');
-  if(!footer) return;
-  const viewCount = statusViewCount(item);
-  const reactionCount = statusReactionCount(item);
-  const iReacted = !!(state.user && item.reactions && item.reactions[state.user.uid]);
-
-  const leftHtml = isMine
-    ? `<button type="button" class="status-viewcount-btn" id="statusViewCountBtn" title="কে কে দেখেছে"><i class="fa-solid fa-eye"></i><span>${toBn(viewCount)}</span></button>`
-    : '';
-
-  let rightHtml = '';
-  if(!isMine){
-    rightHtml = `
-      <button type="button" class="status-love-btn${iReacted ? ' active' : ''}" id="statusLoveBtn" title="লাভ রিয়েক্ট">
-        <i class="fa-${iReacted ? 'solid' : 'regular'} fa-heart"></i>
-      </button>`;
-  } else if(reactionCount){
-    rightHtml = `<span class="status-love-count-badge"><i class="fa-solid fa-heart"></i> ${toBn(reactionCount)}</span>`;
-  }
-
-  footer.innerHTML = `
-    <div class="status-viewer-footer-left">${leftHtml}</div>
-    <div class="status-viewer-footer-right">${rightHtml}</div>`;
-
-  const vBtn = document.getElementById('statusViewCountBtn');
-  if(vBtn) vBtn.onclick = (e) => { e.stopPropagation(); openStatusViewersList(item); };
-  const lBtn = document.getElementById('statusLoveBtn');
-  if(lBtn) lBtn.onclick = (e) => { e.stopPropagation(); toggleStatusLove(item, isMine); };
-}
-
-// ================= "কে কে দেখেছে" viewer list sheet =================
-function openStatusViewersList(item){
-  pauseStatusSlide();
-  const viewer = document.getElementById('statusViewer');
-  let panel = document.getElementById('statusViewersPanel');
-  if(!panel){
-    panel = document.createElement('div');
-    panel.id = 'statusViewersPanel';
-    panel.className = 'status-viewers-panel';
-    viewer.appendChild(panel);
-    panel.addEventListener('click', (e) => { if(e.target === panel) closeStatusViewersList(); });
-  }
-  const viewers = Object.entries(item.viewers || {})
-    .map(([uid, v]) => ({ uid, ...v }))
-    .sort((a, b) => (b.viewedAt || 0) - (a.viewedAt || 0));
-  const reactions = item.reactions || {};
-
-  panel.innerHTML = `
-    <div class="status-viewers-sheet">
-      <div class="status-viewers-handle"></div>
-      <div class="status-viewers-title">
-        <span><i class="fa-solid fa-eye"></i> ${toBn(viewers.length)} জন দেখেছেন</span>
-        <button type="button" class="status-viewers-close" id="statusViewersCloseBtn">✕</button>
-      </div>
-      <div class="status-viewers-list">
-        ${viewers.length ? viewers.map(v => `
-          <div class="status-viewer-row">
-            ${statusAvatarHtml({ avatarColor: v.avatarColor, avatarIcon: v.avatarIcon, name: v.name }).replace('status-ring-avatar', 'status-ring-avatar status-viewer-row-avatar')}
-            <span class="status-viewer-row-name">${escapeHtml(v.name || 'ব্যবহারকারী')}</span>
-            ${reactions[v.uid] ? '<i class="fa-solid fa-heart status-viewer-row-heart"></i>' : ''}
-          </div>`).join('') : '<div class="status-viewers-empty">এখনো কেউ দেখেননি</div>'}
-      </div>
+function statusViewItemHtml(it, i){
+  if(it.type === 'image'){
+    return `<div class="status-view-item" data-i="${i}">
+      <img src="${it.imageData}" alt="">
+      ${it.text ? `<div class="status-view-caption">${escapeHtml(it.text)}</div>` : ''}
     </div>`;
-  panel.style.display = 'flex';
-  document.getElementById('statusViewersCloseBtn').onclick = closeStatusViewersList;
-}
-function closeStatusViewersList(){
-  const panel = document.getElementById('statusViewersPanel');
-  if(panel) panel.style.display = 'none';
-  if(statusIsPaused) resumeStatusSlide();
-}
-
-// ================= Love react (toggle) =================
-async function toggleStatusLove(item, isMine){
-  if(isMine) return;
-  if(!state.user){
-    showToast('রিয়েক্ট দিতে প্রথমে সাইন ইন করুন');
-    if(typeof openAuthFlow === 'function') openAuthFlow('login');
-    return;
   }
-  const uid = state.user.uid;
-  if(!item.reactions) item.reactions = {};
-  const alreadyReacted = !!item.reactions[uid];
-
-  // optimistic local update — instant heart response, no slide/timer restart
-  if(alreadyReacted){ delete item.reactions[uid]; }
-  else { item.reactions[uid] = { name: state.user.name || 'ব্যবহারকারী', avatarColor: state.user.avatarColor || '', avatarIcon: state.user.avatarIcon || '', at: Date.now() }; }
-  renderStatusFooter(item, isMine);
-  const lBtn = document.getElementById('statusLoveBtn');
-  if(lBtn && !alreadyReacted){ lBtn.classList.add('pop'); setTimeout(() => lBtn.classList.remove('pop'), 380); }
-
-  try{
-    if(alreadyReacted){
-      await fbDb.collection('statuses').doc(item.id).update({ ['reactions.' + uid]: firebase.firestore.FieldValue.delete() });
-    } else {
-      await fbDb.collection('statuses').doc(item.id).update({
-        ['reactions.' + uid]: { name: state.user.name || 'ব্যবহারকারী', avatarColor: state.user.avatarColor || '', avatarIcon: state.user.avatarIcon || '', at: Date.now() }
-      });
-    }
-  }catch(e){
-    // revert on failure
-    if(alreadyReacted){ item.reactions[uid] = { name: state.user.name || 'ব্যবহারকারী', avatarColor: state.user.avatarColor || '', avatarIcon: state.user.avatarIcon || '', at: Date.now() }; }
-    else { delete item.reactions[uid]; }
-    renderStatusFooter(item, isMine);
-    showToast('রিয়েক্ট করা যায়নি, আবার চেষ্টা করুন');
-  }
+  const font = STATUS_FONTS.find(f => f.id === it.font) || STATUS_FONTS[0];
+  const bg = STATUS_BG_COLORS[Number.isInteger(it.bgIndex) ? it.bgIndex : 0] || STATUS_BG_COLORS[0];
+  return `<div class="status-view-item" data-i="${i}" style="background:${bg};">
+    <div class="status-view-text" style="font-family:${font.family};font-weight:${font.weight||600};${font.upper?'text-transform:uppercase;':''}">${escapeHtml(it.text||'')}</div>
+  </div>`;
 }
 
-function pauseStatusSlide(){
-  statusIsPaused = true;
-  clearTimeout(statusSlideTimer);
-  if(statusAudioEl) statusAudioEl.pause();
-  const fill = document.getElementById('statusProgFill' + statusSlideIdx);
-  if(fill) fill.style.animationPlayState = 'paused';
-}
-function resumeStatusSlide(){
-  statusIsPaused = false;
-  if(statusAudioEl){
-    statusAudioEl.play().catch(() => {});
-  } else {
-    const group = statusGroups[statusViewerIdx];
-    const item = group && group.items[statusSlideIdx];
-    if(item){
-      const fill = document.getElementById('statusProgFill' + statusSlideIdx);
-      if(fill){
-        const donePct = parseFloat(fill.style.width) || 0;
-        const remainMs = STATUS_TEXT_MS * (1 - donePct / 100);
-        fill.style.transition = `width ${remainMs}ms linear`;
-        requestAnimationFrame(() => { fill.style.width = '100%'; });
-      }
-      statusSlideTimer = setTimeout(() => statusStepSlide(1), Math.max(200, STATUS_TEXT_MS - (STATUS_TEXT_MS * ((parseFloat((fill && fill.style.width) || '0')) / 100))));
-    }
-  }
-}
-
-function statusStepSlide(dir){
-  const group = statusGroups[statusViewerIdx];
+function showStatusViewerItem(idx){
+  const group = statusViewerState.groups[statusViewerState.groupIndex];
   if(!group) return;
-  const next = statusSlideIdx + dir;
-  if(next < 0){
-    statusStepGroup(-1);
-  } else if(next >= group.items.length){
-    statusStepGroup(1);
-  } else {
-    statusSlideIdx = next;
-    renderStatusSlide();
-  }
-}
 
-function statusStepGroup(dir){
-  const nextGroupIdx = statusViewerIdx + dir;
-  if(nextGroupIdx < 0 || nextGroupIdx >= statusGroups.length){
-    closeStatusViewer();
+  if(idx < 0){
+    if(statusViewerState.groupIndex === 0){ idx = 0; }
+    else {
+      statusViewerState.groupIndex -= 1;
+      const prevGroup = statusViewerState.groups[statusViewerState.groupIndex];
+      statusViewerState.itemIndex = Math.max(0, prevGroup.items.length - 1);
+      renderStatusViewerGroup();
+      return;
+    }
+  }
+  if(idx >= group.items.length){
+    if(statusViewerState.groupIndex >= statusViewerState.groups.length - 1){ closeStatusViewer(); return; }
+    statusViewerState.groupIndex += 1;
+    statusViewerState.itemIndex = 0;
+    renderStatusViewerGroup();
     return;
   }
-  statusViewerIdx = nextGroupIdx;
-  statusSlideIdx = dir > 0 ? 0 : (statusGroups[nextGroupIdx].items.length - 1);
-  renderStatusSlide();
-}
 
-async function markStatusViewed(item){
+  statusViewerState.itemIndex = idx;
+  stopStatusItemTimer();
+
+  const tracks = document.querySelectorAll('#statusViewProgressRow .status-view-progress-track');
+  tracks.forEach((t,i) => {
+    const fill = t.querySelector('.status-view-progress-fill');
+    fill.style.transition = 'none';
+    if(i < idx){ t.classList.add('done'); fill.style.width = '100%'; }
+    else { t.classList.remove('done'); fill.style.width = '0%'; }
+  });
+
+  document.querySelectorAll('#statusViewItems .status-view-item').forEach((el,i) => el.classList.toggle('active', i === idx));
+
+  const item = group.items[idx];
+  document.getElementById('statusViewTime').textContent = typeof timeAgoBn === 'function' ? timeAgoBn(item.createdAt) : '';
+  if(group.uid === state.user.uid){
+    document.getElementById('statusViewViewersCount').textContent = toBn(item.viewCount || 0);
+  }
+
   markStatusSeenLocally(item.id);
-  if(!state.user || state.user.uid === item.uid) return;
-  if(item.viewers && item.viewers[state.user.uid]) return;
-  const uid = state.user.uid;
-  const entry = { name: state.user.name || 'ব্যবহারকারী', avatarColor: state.user.avatarColor || '', avatarIcon: state.user.avatarIcon || '', viewedAt: Date.now() };
-  // optimistic — so re-opening the owner's own footer/viewer-list this session is instant
-  if(!item.viewers) item.viewers = {};
-  item.viewers[uid] = entry;
-  try{
-    await fbDb.collection('statuses').doc(item.id).update({ ['viewers.' + uid]: entry });
-  }catch(e){ /* সাইলেন্ট — ভিউ-কাউন্ট শুধুই সহায়ক তথ্য */ }
+  if(group.uid !== state.user.uid) recordStatusView(item);
+
+  startStatusItemTimer(idx, STATUS_ITEM_MS);
 }
 
-async function deleteCurrentStatus(){
-  const group = statusGroups[statusViewerIdx];
-  if(!group) return;
-  const item = group.items[statusSlideIdx];
-  if(!item || !state.user || item.uid !== state.user.uid) return;
-  if(!confirm('এই স্ট্যাটাসটি মুছে ফেলতে চান?')) return;
-  try{
-    await fbDb.collection('statuses').doc(item.id).delete();
+function startStatusItemTimer(idx, durationMs){
+  const tracks = document.querySelectorAll('#statusViewProgressRow .status-view-progress-track');
+  const fill = tracks[idx] && tracks[idx].querySelector('.status-view-progress-fill');
+  if(!fill) return;
+  statusViewerState.currentFill = fill;
+  statusViewerState.remainingMs = durationMs;
+  statusViewerState.paused = false;
+  fill.style.transition = 'none';
+  fill.style.width = '0%';
+  void fill.offsetHeight; // force reflow so the transition below actually animates
+  fill.style.transition = `width ${durationMs}ms linear`;
+  fill.style.width = '100%';
+  statusViewerState.itemStartedAt = Date.now();
+  clearTimeout(statusViewerState.timer);
+  statusViewerState.timer = setTimeout(goToNextStatusItem, durationMs);
+}
+
+function pauseStatusItemTimer(){
+  if(!statusViewerState.open || statusViewerState.paused) return;
+  const fill = statusViewerState.currentFill;
+  if(fill){
+    const w = getComputedStyle(fill).width;
+    fill.style.transition = 'none';
+    fill.style.width = w;
+  }
+  clearTimeout(statusViewerState.timer);
+  const elapsed = Date.now() - statusViewerState.itemStartedAt;
+  statusViewerState.remainingMs = Math.max(200, statusViewerState.remainingMs - elapsed);
+  statusViewerState.paused = true;
+}
+
+function resumeStatusItemTimer(){
+  if(!statusViewerState.open || !statusViewerState.paused) return;
+  statusViewerState.paused = false;
+  const fill = statusViewerState.currentFill;
+  if(fill){
+    void fill.offsetHeight;
+    fill.style.transition = `width ${statusViewerState.remainingMs}ms linear`;
+    fill.style.width = '100%';
+  }
+  statusViewerState.itemStartedAt = Date.now();
+  clearTimeout(statusViewerState.timer);
+  statusViewerState.timer = setTimeout(goToNextStatusItem, statusViewerState.remainingMs);
+}
+
+function stopStatusItemTimer(){
+  clearTimeout(statusViewerState.timer);
+  statusViewerState.timer = null;
+}
+
+function goToNextStatusItem(){ showStatusViewerItem(statusViewerState.itemIndex + 1); }
+function goToPrevStatusItem(){ showStatusViewerItem(statusViewerState.itemIndex - 1); }
+
+// ---------- View tracking (records to Firestore once per viewer, ever) ----------
+function recordStatusView(item){
+  if(!state.user || typeof fbDb === 'undefined' || !fbDb) return;
+  if(getRecordedViewIds().has(item.id)) return;
+  markViewRecordedLocally(item.id);
+
+  const statusRef = fbDb.collection('statuses').doc(item.id);
+  const viewRef = statusRef.collection('views').doc(state.user.uid);
+  viewRef.get().then(snap => {
+    if(snap.exists) return; // already recorded (e.g. from another device) — don't double count
+    const viewerDoc = {
+      name: state.user.name || 'ব্যবহারকারী',
+      avatarColor: state.user.avatarColor || '',
+      avatarIcon: state.user.avatarIcon || '',
+      viewedAt: Date.now()
+    };
+    return viewRef.set(viewerDoc).then(() => statusRef.update({ viewCount: firebase.firestore.FieldValue.increment(1) }));
+  }).catch(err => console.warn('status view record failed:', err));
+}
+
+// ---------- "কারা দেখেছে" (who viewed) bottom sheet — own status only ----------
+function ensureStatusViewersSheet(){
+  if(document.getElementById('statusViewersSheet')) return;
+  const scrim = document.createElement('div');
+  scrim.id = 'statusViewersScrim';
+  scrim.className = 'status-viewers-sheet-scrim';
+  scrim.onclick = closeStatusViewersSheet;
+  document.body.appendChild(scrim);
+
+  const sheet = document.createElement('div');
+  sheet.id = 'statusViewersSheet';
+  sheet.className = 'status-viewers-sheet';
+  sheet.innerHTML = `
+    <div class="status-viewers-sheet-handle"></div>
+    <div class="status-viewers-sheet-title">কারা দেখেছে</div>
+    <div class="status-viewers-list" id="statusViewersList"></div>`;
+  document.body.appendChild(sheet);
+}
+
+function openStatusViewersSheet(){
+  const group = statusViewerState.groups[statusViewerState.groupIndex];
+  if(!group || group.uid !== state.user.uid) return;
+  const item = group.items[statusViewerState.itemIndex];
+  if(!item) return;
+  pauseStatusItemTimer();
+  ensureStatusViewersSheet();
+  document.getElementById('statusViewersSheet').classList.add('open');
+  document.getElementById('statusViewersScrim').classList.add('open');
+  const list = document.getElementById('statusViewersList');
+  list.innerHTML = `<div class="status-viewers-empty">লোড হচ্ছে...</div>`;
+
+  fbDb.collection('statuses').doc(item.id).collection('views').orderBy('viewedAt','desc').get().then(snap => {
+    if(snap.empty){ list.innerHTML = `<div class="status-viewers-empty">এখনো কেউ দেখেনি</div>`; return; }
+    list.innerHTML = snap.docs.map(d => {
+      const v = d.data();
+      return `<div class="status-viewer-row">
+        <div class="status-viewer-avatar" style="background:${v.avatarColor || PROFILE_AVATAR_COLORS[0]}">${avatarGlyph({ name:v.name, avatarIcon:v.avatarIcon })}</div>
+        <div class="status-viewer-name">${escapeHtml(v.name || 'ব্যবহারকারী')}</div>
+        <div class="status-viewer-time">${typeof timeAgoBn === 'function' ? timeAgoBn(v.viewedAt) : ''}</div>
+      </div>`;
+    }).join('');
+  }).catch(() => { list.innerHTML = `<div class="status-viewers-empty">লোড করা যায়নি</div>`; });
+}
+
+function closeStatusViewersSheet(){
+  const sheet = document.getElementById('statusViewersSheet');
+  const scrim = document.getElementById('statusViewersScrim');
+  if(sheet) sheet.classList.remove('open');
+  if(scrim) scrim.classList.remove('open');
+  if(statusViewerState.open) resumeStatusItemTimer();
+}
+
+// ---------- Delete own status item ----------
+function confirmDeleteCurrentStatusItem(){
+  const group = statusViewerState.groups[statusViewerState.groupIndex];
+  if(!group || group.uid !== state.user.uid) return;
+  const item = group.items[statusViewerState.itemIndex];
+  if(!item) return;
+  pauseStatusItemTimer();
+  if(!confirm('এই স্ট্যাটাসটি মুছে ফেলতে চান?')){ resumeStatusItemTimer(); return; }
+  deleteStatusItem(item, group);
+}
+
+function deleteStatusItem(item, group){
+  const statusRef = fbDb.collection('statuses').doc(item.id);
+  statusRef.collection('views').get().then(snap => {
+    const batch = fbDb.batch();
+    snap.forEach(d => batch.delete(d.ref));
+    batch.delete(statusRef);
+    return batch.commit();
+  }).then(() => {
     showToast('স্ট্যাটাস মুছে ফেলা হয়েছে');
-    group.items.splice(statusSlideIdx, 1);
-    if(!group.items.length){ closeStatusViewer(); return; }
-    if(statusSlideIdx >= group.items.length) statusSlideIdx = group.items.length - 1;
-    renderStatusSlide();
-  }catch(e){ showToast('মুছে ফেলা যায়নি, আবার চেষ্টা করুন'); }
-}
+    const idx = group.items.indexOf(item);
+    if(idx > -1) group.items.splice(idx, 1);
+    statusGroupsCache = statusGroupsCache.filter(g => g.uid !== group.uid || g.items.length);
+    statusRowFetchedAt = 0;
 
-// ================= Account-lifecycle hooks (called from js/auth.js) =================
-
-// Deletes every status document owned by this uid. Called right before the
-// Firebase Auth account itself is removed (js/auth.js:deleteAccountEverywhere),
-// while the user is still authenticated — Firestore rules only allow a user
-// to delete their own status docs, so this is the only window to clean them
-// up. Without this, a deleted account's stories kept showing to everyone
-// else until they naturally expired.
-async function deleteAllStatusesForUser(uid){
-  if(!uid || typeof fbDb === 'undefined' || !fbDb) return;
-  try{
-    const snap = await fbDb.collection('statuses').where('uid', '==', uid).get();
-    if(snap.empty) return;
-    const batch = fbDb.batch();
-    snap.docs.forEach(d => batch.delete(d.ref));
-    await batch.commit();
-  }catch(e){ console.warn('স্ট্যাটাস ক্লিনআপ ব্যর্থ:', e); }
-}
-
-// The name/avatar on a status doc is a snapshot taken at post time (same
-// denormalized pattern used for reactions/viewers). That's fine until the
-// poster renames themselves — their still-active stories would otherwise
-// keep showing the old name until they expire. Called from
-// js/auth.js:saveProfileChanges() whenever name/avatarColor/avatarIcon
-// actually changed, so currently-live stories immediately reflect it.
-// Already-expired stories and historical reaction/viewer entries are left
-// alone — this only touches what's still visible right now.
-async function syncOwnStatusesProfile(uid, profile){
-  if(!uid || typeof fbDb === 'undefined' || !fbDb) return;
-  try{
-    const now = Date.now();
-    const snap = await fbDb.collection('statuses').where('uid', '==', uid).get();
-    const batch = fbDb.batch();
-    let any = false;
-    snap.docs.forEach(d => {
-      const data = d.data();
-      if((data.expiresAt || 0) <= now) return; // already expired, leave it be
-      batch.update(d.ref, {
-        name: profile.name || 'ব্যবহারকারী',
-        avatarColor: profile.avatarColor || '',
-        avatarIcon: profile.avatarIcon || ''
-      });
-      any = true;
-    });
-    if(any) await batch.commit();
-  }catch(e){ console.warn('স্ট্যাটাস প্রোফাইল সিঙ্ক ব্যর্থ:', e); }
+    if(!group.items.length){
+      const gi = statusViewerState.groups.indexOf(group);
+      if(gi > -1) statusViewerState.groups.splice(gi, 1);
+    }
+    if(!statusViewerState.groups.length){ closeStatusViewer(); return; }
+    if(statusViewerState.groupIndex >= statusViewerState.groups.length) statusViewerState.groupIndex = statusViewerState.groups.length - 1;
+    const curGroup = statusViewerState.groups[statusViewerState.groupIndex];
+    statusViewerState.itemIndex = Math.min(statusViewerState.itemIndex, Math.max(0, curGroup.items.length - 1));
+    renderStatusViewerGroup();
+  }).catch(err => {
+    console.warn('status delete failed:', err);
+    showToast('মুছে ফেলা যায়নি');
+    resumeStatusItemTimer();
+  });
 }
