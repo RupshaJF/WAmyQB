@@ -285,6 +285,14 @@ function markSelected(idx, container){
 // caches its fetched text in localStorage for that calendar day only, so
 // re-opening the app the same day shows it instantly with no network call,
 // and it still works fully offline after the first load.
+//
+// Card layout (photo-style):
+//   [ 📖  Daily Ayah  ·  ]     [ read-btn ] [ play-btn ]
+//   ─────────────────────────────────────────────────────
+//   Arabic text (right-aligned, large)
+//   Bengali translation
+//   ─────────────────────────────────────────────────────
+//   Surah Name (S:A)               🔊 Qari Name
 function renderAyahOfDay(){
   const card = document.getElementById('ayahOfDayCard');
   if(!card) return;
@@ -299,35 +307,125 @@ function renderAyahOfDay(){
     }
   }catch(e){}
 
-  const renderCard = (arabic, bengali) => {
-    const surahName = surahNamesBn[s-1] || ('সূরা ' + s);
-    card.innerHTML = `
-      <div class="aod-head">
-        <span class="aod-badge">✦ আজকের আয়াত</span>
-      </div>
-      <div class="aod-arabic">${arabic || ''}</div>
-      <div class="aod-bengali">${bengali || ''}</div>
-      <div class="aod-ref">সূরা ${surahName} — আয়াত ${toBn(a)}</div>`;
-    card.onclick = () => openSurahAndScrollTo(s, a);
-  };
+  // ---- Wire up play button after DOM injection ----
+  function wireAodButtons(globalNumber, surahNameEn){
+    const playBtn = document.getElementById('aodPlayBtn');
+    const readBtn = document.getElementById('aodReadBtn');
 
+    if(readBtn){
+      readBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        openSurahAndScrollTo(s, a);
+      });
+    }
+
+    if(playBtn && globalNumber){
+      playBtn.addEventListener('click', e => {
+        e.stopPropagation();
+        // Build a single-ayah playlist and hand it to the existing player
+        state.playlist = [{
+          key: `${s}:${a}`,
+          globalNumber: globalNumber,
+          surah: s,
+          numberInSurah: a,
+          title: surahNamesBn[s-1] || ('সূরা ' + s)
+        }];
+        state.playIndex = 0;
+        if(typeof playAtIndex === 'function') playAtIndex(0, true);
+        // Visual feedback: mark the button as "playing"
+        playBtn.classList.add('aod-playing');
+        playBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+        // Listen for pause/end to reset the button
+        const audioEl = document.getElementById('audioEl');
+        if(audioEl){
+          const resetBtn = () => {
+            if(playBtn){
+              playBtn.classList.remove('aod-playing');
+              playBtn.innerHTML = '<i class="fa-solid fa-circle-play"></i>';
+            }
+          };
+          audioEl.addEventListener('pause', resetBtn, { once: true });
+          audioEl.addEventListener('ended', resetBtn, { once: true });
+        }
+      });
+    }
+  }
+
+  // ---- Build the full card HTML ----
+  function renderCard(arabic, bengali, globalNumber, surahNameEn){
+    const surahNameBn = surahNamesBn[s-1] || ('সূরা ' + s);
+    const displayRef = surahNameEn
+      ? `${surahNameEn} (${s}:${toBn(a)})`
+      : `সূরা ${surahNameBn} (${s}:${toBn(a)})`;
+    const reciter = reciters.find(r => r.id === state.reciter);
+    const reciterLabel = reciter ? (reciter.name) : '';
+    const canPlay = !!(globalNumber);
+
+    card.innerHTML = `
+      <div class="aod-header">
+        <div class="aod-title-wrap">
+          <div class="aod-title-icon"><i class="fa-solid fa-book-quran"></i></div>
+          <span class="aod-title-text">Daily Ayah</span>
+          <span class="aod-badge-dot"></span>
+        </div>
+        <div class="aod-actions">
+          <button class="aod-btn" id="aodReadBtn" title="সূরায় যান">
+            <i class="fa-solid fa-book-open"></i>
+          </button>
+          ${canPlay ? `<button class="aod-btn aod-play-btn" id="aodPlayBtn" title="তিলাওয়াত শুনুন">
+            <i class="fa-solid fa-circle-play"></i>
+          </button>` : ''}
+        </div>
+      </div>
+      <div class="aod-body">
+        <div class="aod-arabic">${arabic || ''}</div>
+        <div class="aod-bengali">${bengali || ''}</div>
+      </div>
+      <div class="aod-footer">
+        <span class="aod-ref">${displayRef}</span>
+        ${reciterLabel ? `<span class="aod-qari"><i class="fa-solid fa-volume-high"></i>${reciterLabel}</span>` : ''}
+      </div>`;
+
+    wireAodButtons(globalNumber, surahNameEn);
+  }
+
+  // ---- Show loading state ----
+  const buildLoadingHtml = () => `
+    <div class="aod-header">
+      <div class="aod-title-wrap">
+        <div class="aod-title-icon"><i class="fa-solid fa-book-quran"></i></div>
+        <span class="aod-title-text">Daily Ayah</span>
+        <span class="aod-badge-dot"></span>
+      </div>
+    </div>
+    <div class="aod-loading">লোড হচ্ছে…</div>`;
+
+  // ---- Use cache if valid ----
   if(cached && cached.edition === state.translationEdition){
-    renderCard(cached.arabic, cached.bengali);
+    renderCard(cached.arabic, cached.bengali, cached.globalNumber || null, cached.surahNameEn || null);
     return;
   }
 
-  card.innerHTML = `<div class="aod-head"><span class="aod-badge">✦ আজকের আয়াত</span></div><div class="aod-loading">লোড হচ্ছে...</div>`;
+  card.innerHTML = buildLoadingHtml();
+
   Promise.all([
     fetch(`${API}/ayah/${s}:${a}/quran-uthmani`).then(r => r.json()),
     fetch(`${API}/ayah/${s}:${a}/${state.translationEdition}`).then(r => r.json())
   ]).then(([arRes, bnRes]) => {
-    const arabic = arRes && arRes.data ? arRes.data.text : '';
-    const bengali = bnRes && bnRes.data ? bnRes.data.text : '';
-    renderCard(arabic, bengali);
-    try{ IDBKV.set('qr_aod_cache', JSON.stringify({ date: todayKey, s, a, edition: state.translationEdition, arabic, bengali })); }catch(e){}
+    const arabic       = arRes && arRes.data ? arRes.data.text : '';
+    const bengali      = bnRes && bnRes.data ? bnRes.data.text : '';
+    const globalNumber = arRes && arRes.data ? arRes.data.number : null;
+    const surahNameEn  = arRes && arRes.data && arRes.data.surah ? arRes.data.surah.englishName : null;
+    renderCard(arabic, bengali, globalNumber, surahNameEn);
+    try{
+      IDBKV.set('qr_aod_cache', JSON.stringify({
+        date: todayKey, s, a,
+        edition: state.translationEdition,
+        arabic, bengali, globalNumber, surahNameEn
+      }));
+    }catch(e){}
   }).catch(() => {
-    card.innerHTML = `<div class="aod-head"><span class="aod-badge">✦ আজকের আয়াত</span></div><div class="aod-loading">লোড করা যায়নি, ইন্টারনেট সংযোগ পরীক্ষা করুন।</div>`;
-    card.onclick = null;
+    card.innerHTML = buildLoadingHtml().replace('লোড হচ্ছে…', 'লোড করা যায়নি — ইন্টারনেট সংযোগ পরীক্ষা করুন।');
   });
 }
 
