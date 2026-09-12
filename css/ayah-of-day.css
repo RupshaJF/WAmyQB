@@ -2,20 +2,82 @@
 
 /* ---- Ayah of the Day (home card) ---- */
 .aod-card{
-  background:linear-gradient(135deg,var(--teal),var(--teal-deep));color:var(--sage);
+  background:linear-gradient(135deg,var(--teal),var(--teal-deep));
+  color:rgba(255,255,255,.95);
   border-radius:18px;padding:18px 18px 16px;margin:2px 2px 16px;cursor:pointer;
-  box-shadow:0 6px 18px rgba(0,0,0,.12);position:relative;overflow:hidden;
+  box-shadow:0 6px 18px rgba(0,0,0,.18);position:relative;overflow:hidden;
 }
 .aod-card::before{
   content:'';position:absolute;top:-30px;right:-30px;width:120px;height:120px;border-radius:50%;
-  background:radial-gradient(circle,rgba(212,175,90,.18),transparent 70%);
+  background:radial-gradient(circle,rgba(212,175,90,.22),transparent 70%);
 }
 .aod-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;}
 .aod-badge{font-size:11.5px;font-weight:700;color:var(--gold);letter-spacing:.3px;}
-.aod-arabic{font-family:'Amiri',serif;font-size:21px;line-height:2;text-align:right;direction:rtl;margin-bottom:8px;}
-.aod-bengali{font-family:'Noto Serif Bengali',serif;font-size:13.5px;line-height:1.7;color:rgba(220,230,222,.92);margin-bottom:10px;}
-.aod-ref{font-size:11.5px;color:var(--gold-soft);font-weight:600;}
-.aod-loading{font-size:13px;color:rgba(220,230,222,.8);padding:6px 0;}
+.aod-arabic{
+  font-family:'Amiri',serif;font-size:21px;line-height:2;
+  text-align:right;direction:rtl;margin-bottom:8px;
+  color:rgba(255,255,255,.97);
+  text-shadow:0 1px 3px rgba(0,0,0,.25);
+}
+.aod-bengali{
+  font-family:'Noto Serif Bengali',serif;font-size:13.5px;line-height:1.7;
+  color:rgba(255,255,255,.88);
+  margin-bottom:10px;
+}
+.aod-ref{font-size:11.5px;color:var(--gold);font-weight:600;opacity:.9;}
+.aod-loading{font-size:13px;color:rgba(255,255,255,.75);padding:6px 0;}
+
+/* --- থিম-স্পেসিফিক override: যেসব থিমে --teal অনেক হালকা বা অস্বচ্ছ --- */
+
+/* Desert: --teal = #B5581F (terracotta), white text naturally works */
+body[data-theme="desert"] .aod-card{
+  background:linear-gradient(135deg,#B5581F,#7A3B12);
+}
+body[data-theme="desert"] .aod-badge{color:#F5D080;}
+body[data-theme="desert"] .aod-ref{color:#F5D080;opacity:1;}
+
+/* Ocean: --teal = #116E8C (mid-blue), white text works */
+body[data-theme="ocean"] .aod-card{
+  background:linear-gradient(135deg,#116E8C,#0A4A61);
+}
+body[data-theme="ocean"] .aod-badge{color:#F4CC76;}
+body[data-theme="ocean"] .aod-ref{color:#F4CC76;opacity:1;}
+
+/* Rose: --teal = #B5476B (rose-pink), white text works */
+body[data-theme="rose"] .aod-card{
+  background:linear-gradient(135deg,#B5476B,#7E2F4B);
+}
+body[data-theme="rose"] .aod-badge{color:#F9D99E;}
+body[data-theme="rose"] .aod-ref{color:#F9D99E;opacity:1;}
+
+/* AMOLED: --teal = #101010 (nearly black), needs gold accent border */
+body[data-theme="amoled"] .aod-card{
+  background:linear-gradient(135deg,#1A1A1A,#000000);
+  border:1px solid rgba(230,185,77,.25);
+  box-shadow:0 6px 24px rgba(0,0,0,.5);
+}
+body[data-theme="amoled"] .aod-arabic{color:rgba(255,255,255,.95);}
+body[data-theme="amoled"] .aod-bengali{color:rgba(220,220,220,.88);}
+body[data-theme="amoled"] .aod-badge{color:#E6B94D;}
+body[data-theme="amoled"] .aod-ref{color:#E6B94D;opacity:1;}
+
+/* Royal: --teal = #3D2470 (deep purple) — white text works, gold polish */
+body[data-theme="royal"] .aod-card{
+  background:linear-gradient(135deg,#3D2470,#120B21);
+}
+body[data-theme="royal"] .aod-badge{color:#E3B854;}
+body[data-theme="royal"] .aod-ref{color:#E3B854;opacity:1;}
+
+/* Night: --teal = #123A34 (dark teal) — white text works fine already */
+body[data-theme="night"] .aod-badge{color:#D9B45E;}
+body[data-theme="night"] .aod-ref{color:#D9B45E;opacity:1;}
+
+/* Emerald (default): --teal = #0E3B36 — white text works, gold accent */
+body[data-theme="emerald"] .aod-badge,
+:root .aod-badge{color:#E8C96A;}
+body[data-theme="emerald"] .aod-ref,
+:root .aod-ref{color:#E8C96A;opacity:1;}
+
 
 /* ---- Reading streak progress ring (home widget, js/sidebar.js renderHomeStreakRing) ---- */
 .streak-ring-card{
@@ -55,4 +117,3 @@
 .hifz-review-sub{font-family:'Hind Siliguri',sans-serif;font-size:11.5px;color:var(--ink-soft);margin-top:3px;line-height:1.5;}
 .hifz-review-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px;}
 .hifz-due-chip{padding:6px 12px;font-size:12px;}
-
