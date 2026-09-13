@@ -2,31 +2,76 @@
 // A row of circular avatars sits above the Daily-Ayah card on the home tab —
 // your own status (tap the + to post) plus everyone else's active (last
 // 24h) statuses. Tapping a circle opens a full-screen story viewer with
-// segmented progress bars, tap-to-advance / hold-to-pause, and — for your
-// own status only — a "কারা দেখেছে" (who viewed) list with a live count,
-// exactly like WhatsApp. Both posting AND viewing require a completed
-// sign-in/sign-up (js/auth.js openAuthFlow) — there is no guest path here.
+// segmented progress bars, tap-to-advance / hold-to-pause, a love-reaction
+// (double-tap the middle of the screen, or the heart button) and — for your
+// own status only — a "কারা দেখেছে" (who viewed, with a heart mark for
+// anyone who also reacted) list with a live count. Both posting AND viewing
+// require a completed sign-in/sign-up (js/auth.js openAuthFlow) — there is
+// no guest path here.
+//
+// The composer supports several slides in one sitting (a small "+" queues
+// another blank slide, tabs along the top switch between them and every
+// slide sends together), an undo stack per slide, and a silently
+// auto-saved draft (IDBKV) that's offered back the next time the composer
+// opens if it was closed without sending.
+//   Text slides:  font cycle, alignment, size, a solid/gradient background
+//                 palette, a separate text-colour palette and an optional
+//                 solid "highlight" card behind the text.
+//   Image slides: pinch-to-zoom + drag-to-pan cropping, a small set of flat
+//                 colour-grading filters (no blur/drop-shadow "glow" — just
+//                 brightness/contrast/saturation, same restriction as the
+//                 rest of this file's visuals), and draggable/resizable text
+//                 stickers that get baked into the final image on send.
 //
 // Firestore layout (see firestore.rules for the matching security rules):
-//   statuses/{statusId}                 one doc per posted status
+//   statuses/{statusId}                 one doc per posted status/slide
 //     uid, name, avatarColor, avatarIcon  — snapshot of the poster
 //     type: 'text' | 'image'
-//     text        — status text (type:text) or optional caption (type:image)
-//     bgIndex     — index into STATUS_BG_COLORS (type:text)
-//     font        — id from STATUS_FONTS (type:text)
-//     imageData   — compressed JPEG data URL (type:image)
+//     text        — status text (type:text only; image captions are now
+//                   baked directly into imageData, this field is kept
+//                   optional purely for backward compatibility with any
+//                   still-active status posted by an older cached client)
+//     bg          — CSS background value (type:text), one of
+//                   STATUS_BG_SWATCHES; bgIndex (legacy, into the old fixed
+//                   8-colour array) is still read as a fallback
+//     font, align, size, textColor, highlight — text styling (type:text)
+//     imageData   — compressed JPEG data URL, crop/filter/stickers baked in
+//                   (type:image)
 //     createdAt, expiresAt — client epoch-ms (24h TTL; expired ones simply
 //                             stop matching the "still active" query below —
 //                             no cleanup job needed for them to disappear)
 //     viewCount   — denormalized counter, +1 per unique viewer
+//     reactCount  — denormalized counter, ±1 as love-reactions toggle
 //   statuses/{statusId}/views/{viewerUid}
 //     name, avatarColor, avatarIcon, viewedAt
+//   statuses/{statusId}/reactions/{reactorUid}
+//     name, avatarColor, avatarIcon, reactedAt, type:'love'
 
 const STATUS_TTL_MS = 24 * 60 * 60 * 1000;
 const STATUS_ITEM_MS = 6000; // how long a single item plays before auto-advancing
 const STATUS_ROW_CACHE_MS = 40000;
+const STATUS_MAX_SLIDES = 10;
+const STATUS_UNDO_LIMIT = 15;
+const STATUS_DRAFT_KEY = 'qr_status_draft';
+const STATUS_DOUBLE_TAP_MS = 320;
 
-const STATUS_BG_COLORS = ['#2E6F5E','#7A2E44','#3D4F8A','#6B3F8A','#8A4A2E','#2E6B8A','#5A6B2E','#3A3A46'];
+// 16 flat swatches: 8 solid colours (STATUS_BG_COLORS, kept for legacy
+// bgIndex look-ups) followed by 8 two-tone diagonal gradients built from the
+// same palette — no blur, no glow, just flat colour like everything else.
+const STATUS_BG_SWATCHES = [
+  '#2E6F5E','#7A2E44','#3D4F8A','#6B3F8A','#8A4A2E','#2E6B8A','#5A6B2E','#3A3A46',
+  'linear-gradient(135deg,#2E6F5E,#123B2C)',
+  'linear-gradient(135deg,#7A2E44,#3A0F1E)',
+  'linear-gradient(135deg,#3D4F8A,#141B3D)',
+  'linear-gradient(135deg,#6B3F8A,#24123D)',
+  'linear-gradient(135deg,#8A4A2E,#3A2110)',
+  'linear-gradient(135deg,#2E6B8A,#0F2A38)',
+  'linear-gradient(135deg,#5A6B2E,#22280F)',
+  'linear-gradient(135deg,#3A3A46,#16161C)'
+];
+const STATUS_BG_COLORS = STATUS_BG_SWATCHES.slice(0, 8); // legacy fallback for old bgIndex docs
+
+const STATUS_TEXT_COLORS = ['#FFFFFF','#15151A','#F0C24B','#5FD6B0','#F0879F','#8FC6F0'];
 
 const STATUS_FONTS = [
   { id:'sans',    family:"'Hind Siliguri', sans-serif",           weight:600 },
@@ -36,20 +81,36 @@ const STATUS_FONTS = [
   { id:'display', family:"Impact, 'Hind Siliguri', sans-serif",   weight:700, upper:true }
 ];
 
+// Colour-grading only — brightness/contrast/saturation/hue, never blur() or
+// drop-shadow(), so this never turns into the "lighting glow" look.
+const STATUS_FILTERS = [
+  { id:'normal', label:'নরমাল',    css:'' },
+  { id:'vivid',  label:'ভিভিড',    css:'saturate(1.35) contrast(1.1)' },
+  { id:'warm',   label:'ওয়ার্ম',   css:'sepia(.22) saturate(1.15) brightness(1.03)' },
+  { id:'cool',   label:'কুল',      css:'saturate(1.08) hue-rotate(-6deg) brightness(1.02)' },
+  { id:'mono',   label:'সাদাকালো', css:'grayscale(1) contrast(1.06)' },
+  { id:'fade',   label:'ফেইড',     css:'brightness(1.08) saturate(.65) contrast(.92)' }
+];
+
 let statusGroupsCache = [];  // last fetched groups, {uid,name,avatarColor,avatarIcon,items:[]}[]
 let statusRowFetchedAt = 0;
 let statusRowLoading = false;
 
-let statusComposerState = { mode:'text', colorIndex:0, fontIndex:0, imageDataUrl:null, textValue:'', captionText:'', sending:false };
+let statusComposerState = { slides: [], activeIndex: 0, sending: false };
 
 let statusViewerState = {
   open:false, groups:[], groupIndex:0, itemIndex:0,
   timer:null, itemStartedAt:0, remainingMs:0, paused:false, currentFill:null
 };
 
-// ---------- Local (per-device) caches — only drive the ring color / avoid
-// re-sending duplicate view writes; the real count + viewer list always
-// live server-side so they're correct from any device (js/idb.js) ----------
+// ---------- small generic helpers ----------
+function clamp(v, min, max){ return Math.max(min, Math.min(max, v)); }
+function dist(a, b){ return Math.hypot(a.x - b.x, a.y - b.y); }
+function statusUid(){ return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+
+// ---------- Local (per-device) caches — only drive the ring colour / heart
+// state / avoid re-sending duplicate writes; the real counts + viewer list
+// always live server-side so they're correct from any device (js/idb.js) ----------
 function getSeenStatusIds(){
   try{ return new Set(JSON.parse(IDBKV.get('qr_status_seen') || '[]')); }catch(e){ return new Set(); }
 }
@@ -70,9 +131,27 @@ function markViewRecordedLocally(id){
   const arr = Array.from(set);
   try{ IDBKV.set('qr_status_view_recorded', JSON.stringify(arr.length > 500 ? arr.slice(arr.length - 500) : arr)); }catch(e){}
 }
+function getReactedStatusIds(){
+  try{ return new Set(JSON.parse(IDBKV.get('qr_status_reacted') || '[]')); }catch(e){ return new Set(); }
+}
+function markStatusReactedLocally(id){
+  const set = getReactedStatusIds();
+  if(set.has(id)) return;
+  set.add(id);
+  const arr = Array.from(set);
+  try{ IDBKV.set('qr_status_reacted', JSON.stringify(arr.length > 500 ? arr.slice(arr.length - 500) : arr)); }catch(e){}
+}
+function unmarkStatusReactedLocally(id){
+  const set = getReactedStatusIds();
+  if(!set.has(id)) return;
+  set.delete(id);
+  try{ IDBKV.set('qr_status_reacted', JSON.stringify(Array.from(set))); }catch(e){}
+}
 
 // ==================================================================
-// Home-tab row
+// Home-tab row  (unchanged: grouping/ring logic doesn't depend on any of
+// the new composer/viewer fields — new fields just ride along inside
+// each item's raw data until the viewer reads them)
 // ==================================================================
 function renderStatusRow(){
   const wrap = document.getElementById('statusRow');
@@ -211,8 +290,62 @@ function renderStatusRowFromCache(){
 }
 
 // ==================================================================
-// Composer (post a text or photo status)
+// Composer — one or more slides (text and/or image), each with its own
+// styling/crop/filters/stickers, an undo stack, and a silently
+// auto-persisted draft.
 // ==================================================================
+function makeBlankSlide(){
+  return {
+    mode: 'text',
+    bg: STATUS_BG_SWATCHES[Math.floor(Math.random() * 8)],
+    colorPanelTab: 'solid',
+    fontIndex: 0,
+    align: 'center',
+    size: 26,
+    textColor: '#ffffff',
+    highlight: false,
+    textValue: '',
+    imageRawDataUrl: null,
+    filterId: 'normal',
+    frameAspect: 9/16,
+    crop: { scale:1, offsetXFrac:0, offsetYFrac:0 },
+    textOverlays: [],
+    activeOverlayId: null,
+    overlayEditMode: null,
+    undoStack: []
+  };
+}
+function activeSlide(){ return statusComposerState.slides[statusComposerState.activeIndex]; }
+
+function snapshotForUndo(slide){
+  return {
+    mode: slide.mode, bg: slide.bg, colorPanelTab: slide.colorPanelTab, fontIndex: slide.fontIndex,
+    align: slide.align, size: slide.size, textColor: slide.textColor, highlight: slide.highlight,
+    textValue: slide.textValue, imageRawDataUrl: slide.imageRawDataUrl, filterId: slide.filterId,
+    frameAspect: slide.frameAspect,
+    crop: slide.crop ? { ...slide.crop } : { scale:1, offsetXFrac:0, offsetYFrac:0 },
+    textOverlays: (slide.textOverlays || []).map(o => ({ ...o }))
+  };
+}
+function pushUndoSnapshot(){
+  const slide = activeSlide();
+  if(!slide) return;
+  slide.undoStack = slide.undoStack || [];
+  slide.undoStack.push(snapshotForUndo(slide));
+  if(slide.undoStack.length > STATUS_UNDO_LIMIT) slide.undoStack.shift();
+  renderComposerChrome();
+}
+function undoComposerChange(){
+  const slide = activeSlide();
+  if(!slide || !slide.undoStack || !slide.undoStack.length) return;
+  const snap = slide.undoStack.pop();
+  Object.assign(slide, snap);
+  slide.activeOverlayId = null;
+  slide.overlayEditMode = null;
+  renderComposerStage();
+  saveComposerDraft();
+}
+
 function ensureStatusComposerOverlay(){
   let ov = document.getElementById('statusComposerOverlay');
   if(ov) return ov;
@@ -222,64 +355,47 @@ function ensureStatusComposerOverlay(){
   ov.innerHTML = `
     <div class="status-comp-topbar">
       <button type="button" class="status-comp-close" id="statusCompClose"><i class="fa-solid fa-xmark"></i></button>
-      <div class="status-comp-tools">
-        <button type="button" class="status-comp-tool-btn" id="statusCompFontBtn">Aa</button>
-        <label class="status-comp-tool-btn" id="statusCompImageBtn">
-          <i class="fa-solid fa-image"></i>
-          <input type="file" accept="image/*" id="statusCompFileInput" style="display:none;">
-        </label>
+      <div class="status-comp-topbar-right">
+        <button type="button" class="status-comp-tool-btn" id="statusCompUndoBtn" title="আনডু"><i class="fa-solid fa-rotate-left"></i></button>
+        <button type="button" class="status-comp-tool-btn" id="statusCompTrashBtn" title="মুছুন"><i class="fa-solid fa-trash"></i></button>
+        <button type="button" class="status-comp-tool-btn" id="statusCompAddSlideBtn" title="নতুন স্লাইড">
+          <i class="fa-solid fa-plus"></i>
+          <span class="status-comp-slide-badge" id="statusCompSlideBadge" style="display:none;"></span>
+        </button>
       </div>
     </div>
+    <div class="status-comp-slidetabs" id="statusCompSlideTabs" style="display:none;"></div>
     <div class="status-comp-stage" id="statusCompStage"></div>
-    <div class="status-comp-colors" id="statusCompColors"></div>
+    <div class="status-comp-toolbar" id="statusCompToolbar"></div>
+    <div class="status-comp-bottompanel" id="statusCompBottomPanel"></div>
     <div class="status-comp-bottombar">
+      <div class="status-comp-counter" id="statusCompCounter"></div>
       <button type="button" class="status-comp-send" id="statusCompSend"><i class="fa-solid fa-check"></i></button>
     </div>`;
   document.body.appendChild(ov);
 
   document.getElementById('statusCompClose').onclick = closeStatusComposer;
   document.getElementById('statusCompSend').onclick = submitStatus;
-  document.getElementById('statusCompFontBtn').onclick = () => {
-    statusComposerState.fontIndex = (statusComposerState.fontIndex + 1) % STATUS_FONTS.length;
-    applyStatusComposerFont();
-  };
-  document.getElementById('statusCompFileInput').addEventListener('change', (e) => {
-    const file = e.target.files && e.target.files[0];
-    if(file) handleStatusImagePick(file);
-    e.target.value = '';
-  });
-
-  const colorsWrap = document.getElementById('statusCompColors');
-  colorsWrap.innerHTML = STATUS_BG_COLORS.map((c,i) => `<button type="button" class="status-comp-color-dot" data-i="${i}" style="background:${c}"></button>`).join('');
-  colorsWrap.querySelectorAll('.status-comp-color-dot').forEach(btn => {
-    btn.onclick = () => {
-      statusComposerState.colorIndex = parseInt(btn.getAttribute('data-i'), 10) || 0;
-      const stage = document.getElementById('statusCompStage');
-      if(stage && statusComposerState.mode === 'text') stage.style.background = STATUS_BG_COLORS[statusComposerState.colorIndex];
-      colorsWrap.querySelectorAll('.status-comp-color-dot').forEach((el,i) => el.classList.toggle('active', i === statusComposerState.colorIndex));
-    };
-  });
+  document.getElementById('statusCompUndoBtn').onclick = undoComposerChange;
+  document.getElementById('statusCompTrashBtn').onclick = handleComposerTrashTap;
+  document.getElementById('statusCompAddSlideBtn').onclick = addComposerSlide;
 
   return ov;
-}
-
-function applyStatusComposerFont(){
-  const ta = document.getElementById('statusCompTextarea');
-  if(!ta) return;
-  const f = STATUS_FONTS[statusComposerState.fontIndex];
-  ta.style.fontFamily = f.family;
-  ta.style.fontWeight = f.weight || 600;
-  ta.style.textTransform = f.upper ? 'uppercase' : 'none';
 }
 
 function openStatusComposer(mode){
   if(!state.user){ if(typeof openAuthFlow === 'function') openAuthFlow('choice'); return; }
   ensureStatusComposerOverlay();
-  statusComposerState = {
-    mode: 'text',
-    colorIndex: Math.floor(Math.random() * STATUS_BG_COLORS.length),
-    fontIndex: 0, imageDataUrl: null, textValue: '', captionText: '', sending: false
-  };
+
+  const draft = loadComposerDraft();
+  if(draft && draft.slides && draft.slides.length){
+    draft.slides.forEach(s => { s.undoStack = []; s.activeOverlayId = null; s.overlayEditMode = null; s.textOverlays = s.textOverlays || []; s.crop = s.crop || { scale:1, offsetXFrac:0, offsetYFrac:0 }; });
+    statusComposerState = { slides: draft.slides, activeIndex: clamp(draft.activeIndex || 0, 0, draft.slides.length - 1), sending: false };
+    showToast('খসড়া পুনরুদ্ধার করা হয়েছে');
+  } else {
+    statusComposerState = { slides: [ makeBlankSlide() ], activeIndex: 0, sending: false };
+  }
+
   renderComposerStage();
   document.getElementById('statusComposerOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
@@ -290,50 +406,418 @@ function openStatusComposer(mode){
 }
 
 function closeStatusComposer(){
+  if(statusComposerState.sending) return;
+  finalizeActiveOverlayIfAny();
+  saveComposerDraft();
   const ov = document.getElementById('statusComposerOverlay');
   if(ov) ov.classList.remove('open');
   document.body.style.overflow = '';
 }
 
+function finalizeActiveOverlayIfAny(){
+  const slide = activeSlide();
+  if(slide && slide.activeOverlayId){
+    const frame = document.getElementById('statusImgFrame');
+    if(frame) finalizeActiveOverlay(slide, frame);
+  }
+}
+
+// ---------- top chrome: undo/trash enabled state + slide tabs/badge ----------
+function renderComposerChrome(){
+  const slides = statusComposerState.slides;
+  const slide = activeSlide();
+  const badge = document.getElementById('statusCompSlideBadge');
+  if(badge){
+    if(slides.length > 1){ badge.style.display = 'flex'; badge.textContent = toBn(slides.length); }
+    else badge.style.display = 'none';
+  }
+  const undoBtn = document.getElementById('statusCompUndoBtn');
+  if(undoBtn) undoBtn.classList.toggle('disabled', !(slide.undoStack && slide.undoStack.length));
+  const addBtn = document.getElementById('statusCompAddSlideBtn');
+  if(addBtn) addBtn.classList.toggle('disabled', slides.length >= STATUS_MAX_SLIDES);
+
+  const tabsWrap = document.getElementById('statusCompSlideTabs');
+  if(tabsWrap){
+    if(slides.length <= 1){ tabsWrap.style.display = 'none'; tabsWrap.innerHTML = ''; }
+    else {
+      tabsWrap.style.display = 'flex';
+      tabsWrap.innerHTML = slides.map((s,i) => {
+        const active = i === statusComposerState.activeIndex;
+        const bgStyle = (s.mode === 'image' && s.imageRawDataUrl)
+          ? `background-image:url('${s.imageRawDataUrl}');background-size:cover;background-position:center;`
+          : `background:${s.bg || STATUS_BG_SWATCHES[0]};`;
+        return `<button type="button" class="status-comp-slide-tab ${active ? 'active' : ''}" data-i="${i}" style="${bgStyle}"></button>`;
+      }).join('');
+      tabsWrap.querySelectorAll('.status-comp-slide-tab').forEach(btn => {
+        btn.onclick = () => switchComposerSlide(parseInt(btn.dataset.i, 10));
+      });
+    }
+  }
+}
+
+function switchComposerSlide(idx){
+  if(idx === statusComposerState.activeIndex) return;
+  finalizeActiveOverlayIfAny();
+  statusComposerState.activeIndex = idx;
+  renderComposerStage();
+}
+
+function addComposerSlide(){
+  if(statusComposerState.slides.length >= STATUS_MAX_SLIDES){ showToast(`একটি স্ট্যাটাসে সর্বোচ্চ ${toBn(STATUS_MAX_SLIDES)}টি স্লাইড দেওয়া যায়`); return; }
+  finalizeActiveOverlayIfAny();
+  statusComposerState.slides.push(makeBlankSlide());
+  statusComposerState.activeIndex = statusComposerState.slides.length - 1;
+  renderComposerStage();
+  saveComposerDraft();
+}
+
+function handleComposerTrashTap(){
+  const slides = statusComposerState.slides;
+  const slide = activeSlide();
+  const hasContent = !!(slide.textValue && slide.textValue.trim()) || !!slide.imageRawDataUrl || (slide.textOverlays && slide.textOverlays.length > 0);
+  if(slides.length > 1){
+    if(hasContent && !confirm('এই স্লাইডটি মুছে ফেলতে চান?')) return;
+    slides.splice(statusComposerState.activeIndex, 1);
+    statusComposerState.activeIndex = clamp(statusComposerState.activeIndex, 0, slides.length - 1);
+    renderComposerStage();
+    saveComposerDraft();
+  } else {
+    if(!hasContent) return;
+    if(!confirm('এই স্লাইডটি খালি করতে চান?')) return;
+    statusComposerState.slides[0] = makeBlankSlide();
+    renderComposerStage();
+    saveComposerDraft();
+  }
+}
+
+// ---------- main stage render (dispatches to text/image renderer) ----------
 function renderComposerStage(){
   const stage = document.getElementById('statusCompStage');
-  const colorsWrap = document.getElementById('statusCompColors');
-  const fontBtn = document.getElementById('statusCompFontBtn');
   if(!stage) return;
-
-  if(statusComposerState.mode === 'image' && statusComposerState.imageDataUrl){
-    stage.style.background = '#000';
-    stage.innerHTML = `
-      <img class="status-comp-preview-img" src="${statusComposerState.imageDataUrl}">
-      <div class="status-comp-caption"><input type="text" id="statusCompCaptionInput" maxlength="200" placeholder="ক্যাপশন যোগ করুন..."></div>`;
-    const capInput = document.getElementById('statusCompCaptionInput');
-    capInput.value = statusComposerState.captionText || '';
-    capInput.oninput = () => { statusComposerState.captionText = capInput.value; };
-    if(colorsWrap) colorsWrap.style.display = 'none';
-    if(fontBtn) fontBtn.style.display = 'none';
+  const slide = activeSlide();
+  if(slide.mode === 'image' && slide.imageRawDataUrl){
+    renderImageStage(stage, slide);
   } else {
-    statusComposerState.mode = 'text';
-    stage.style.background = STATUS_BG_COLORS[statusComposerState.colorIndex];
-    stage.innerHTML = `<textarea class="status-comp-textarea" id="statusCompTextarea" maxlength="700" placeholder="একটি স্ট্যাটাস লিখুন..."></textarea>`;
-    const ta = document.getElementById('statusCompTextarea');
-    ta.value = statusComposerState.textValue || '';
-    ta.oninput = () => { statusComposerState.textValue = ta.value; };
-    applyStatusComposerFont();
-    setTimeout(() => { try{ ta.focus(); }catch(e){} }, 60);
-    if(colorsWrap){
-      colorsWrap.style.display = 'flex';
-      colorsWrap.querySelectorAll('.status-comp-color-dot').forEach((el,i) => el.classList.toggle('active', i === statusComposerState.colorIndex));
-    }
-    if(fontBtn) fontBtn.style.display = 'flex';
+    slide.mode = 'text';
+    renderTextStage(stage, slide);
   }
+  renderComposerToolbar();
+  renderComposerBottomPanel();
+  renderComposerCounter();
+  renderComposerChrome();
+}
+
+function renderComposerCounter(){
+  const el = document.getElementById('statusCompCounter');
+  if(!el || statusComposerState.sending) return;
+  const slide = activeSlide();
+  if(slide.mode === 'text'){
+    const len = (slide.textValue || '').length;
+    el.textContent = `${toBn(len)}/${toBn(700)}`;
+    el.classList.toggle('warn', len > 650);
+  } else {
+    el.textContent = '';
+    el.classList.remove('warn');
+  }
+}
+
+// ---------- TEXT slide ----------
+function renderTextStage(stage, slide){
+  stage.style.background = slide.bg || STATUS_BG_SWATCHES[0];
+  stage.innerHTML = `<textarea class="status-comp-textarea" id="statusCompTextarea" maxlength="700" placeholder="একটি স্ট্যাটাস লিখুন..."></textarea>`;
+  const ta = document.getElementById('statusCompTextarea');
+  ta.value = slide.textValue || '';
+  ta.style.textAlign = slide.align || 'center';
+  ta.style.fontSize = (slide.size || 26) + 'px';
+  ta.style.color = slide.textColor || '#ffffff';
+  ta.classList.toggle('highlight', !!slide.highlight);
+  applyTextareaFont(ta, slide);
+  let dirtyTimer = null;
+  ta.oninput = () => {
+    slide.textValue = ta.value;
+    renderComposerCounter();
+    clearTimeout(dirtyTimer);
+    dirtyTimer = setTimeout(saveComposerDraft, 500);
+  };
+  setTimeout(() => { try{ ta.focus(); }catch(e){} }, 60);
+}
+function applyTextareaFont(ta, slide){
+  const f = STATUS_FONTS[slide.fontIndex || 0];
+  ta.style.fontFamily = f.family;
+  ta.style.fontWeight = f.weight || 600;
+  ta.style.textTransform = f.upper ? 'uppercase' : 'none';
+}
+
+// ---------- IMAGE slide ----------
+function renderImageStage(stage, slide){
+  stage.style.background = '#000';
+  const filterCss = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
+  stage.innerHTML = `
+    <div class="status-img-frame" id="statusImgFrame">
+      <img class="status-crop-img" id="statusCropImg" src="${slide.imageRawDataUrl}" style="filter:${filterCss};">
+      <div class="status-overlay-layer" id="statusOverlayLayer"></div>
+    </div>`;
+  const frame = document.getElementById('statusImgFrame');
+  requestAnimationFrame(() => {
+    const r = frame.getBoundingClientRect();
+    slide.frameAspect = r.height ? (r.width / r.height) : (9/16);
+    applyImageTransform(frame, slide);
+    renderOverlaysLayer(slide, frame);
+  });
+  attachImageFrameGestures(frame, slide);
+}
+
+function applyImageTransform(frameEl, slide){
+  const img = frameEl.querySelector('.status-crop-img');
+  if(!img) return;
+  const rect = frameEl.getBoundingClientRect();
+  const scale = clamp(slide.crop.scale || 1, 1, 4);
+  slide.crop.scale = scale;
+  const maxPanXpx = (scale - 1) / 2 * rect.width;
+  const maxPanYpx = (scale - 1) / 2 * rect.height;
+  let txPx = (slide.crop.offsetXFrac || 0) * rect.width;
+  let tyPx = (slide.crop.offsetYFrac || 0) * rect.height;
+  txPx = clamp(txPx, -maxPanXpx, maxPanXpx);
+  tyPx = clamp(tyPx, -maxPanYpx, maxPanYpx);
+  slide.crop.offsetXFrac = rect.width ? txPx / rect.width : 0;
+  slide.crop.offsetYFrac = rect.height ? tyPx / rect.height : 0;
+  img.style.transform = `translate(${txPx}px, ${tyPx}px) scale(${scale})`;
+}
+
+// Pinch-to-zoom (two pointers) + drag-to-pan (one pointer) on the photo
+// itself. Ignored while a text sticker is selected — that sticker's own
+// gestures (attachOverlayGestures) take over until it's deselected.
+function attachImageFrameGestures(frameEl, slide){
+  const pointers = new Map();
+  let mode = null;
+  let panStart = null;
+  let pinchStart = null;
+
+  frameEl.addEventListener('pointerdown', (e) => {
+    if(slide.activeOverlayId){ finalizeActiveOverlay(slide, frameEl); return; }
+    try{ frameEl.setPointerCapture(e.pointerId); }catch(err){}
+    if(pointers.size === 0) pushUndoSnapshot();
+    pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    if(pointers.size === 1){
+      mode = 'pan';
+      const p = pointers.get(e.pointerId);
+      panStart = { x:p.x, y:p.y, offX0: slide.crop.offsetXFrac || 0, offY0: slide.crop.offsetYFrac || 0 };
+    } else if(pointers.size === 2){
+      mode = 'pinch';
+      const pts = Array.from(pointers.values());
+      pinchStart = { dist0: dist(pts[0], pts[1]) || 1, scale0: slide.crop.scale || 1 };
+    }
+  });
+  frameEl.addEventListener('pointermove', (e) => {
+    if(!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    if(mode === 'pan' && pointers.size === 1 && panStart){
+      const rect = frameEl.getBoundingClientRect();
+      const p = pointers.get(e.pointerId);
+      const dx = (p.x - panStart.x) / rect.width;
+      const dy = (p.y - panStart.y) / rect.height;
+      slide.crop.offsetXFrac = panStart.offX0 + dx;
+      slide.crop.offsetYFrac = panStart.offY0 + dy;
+      applyImageTransform(frameEl, slide);
+    } else if(mode === 'pinch' && pointers.size === 2 && pinchStart){
+      const pts = Array.from(pointers.values());
+      const ratio = dist(pts[0], pts[1]) / pinchStart.dist0;
+      slide.crop.scale = clamp(pinchStart.scale0 * ratio, 1, 4);
+      applyImageTransform(frameEl, slide);
+    }
+  });
+  function endPointer(e){
+    pointers.delete(e.pointerId);
+    if(pointers.size === 1){
+      mode = 'pan';
+      const [, p] = Array.from(pointers.entries())[0];
+      panStart = { x:p.x, y:p.y, offX0: slide.crop.offsetXFrac || 0, offY0: slide.crop.offsetYFrac || 0 };
+    } else if(pointers.size === 0){
+      mode = null; panStart = null; pinchStart = null;
+      saveComposerDraft();
+    }
+  }
+  frameEl.addEventListener('pointerup', endPointer);
+  frameEl.addEventListener('pointercancel', endPointer);
+}
+
+function renderOverlaysLayer(slide, frame){
+  const layer = document.getElementById('statusOverlayLayer');
+  if(!layer) return;
+  const rect = frame.getBoundingClientRect();
+  layer.innerHTML = '';
+  (slide.textOverlays || []).forEach(ov => {
+    const el = document.createElement('div');
+    el.className = 'status-text-overlay' + (slide.activeOverlayId === ov.id ? ' active' : '') + (!ov.text ? ' placeholder' : '');
+    el.dataset.id = ov.id;
+    el.style.left = ov.xPct + '%';
+    el.style.top = ov.yPct + '%';
+    el.style.color = ov.color || '#ffffff';
+    el.style.textAlign = ov.align || 'center';
+    el.style.fontSize = Math.max(10, (ov.sizeFrac || 0.08) * rect.width) + 'px';
+    el.textContent = ov.text || 'টেক্সট লিখুন';
+    layer.appendChild(el);
+    attachOverlayGestures(el, ov, slide, frame);
+    if(slide.activeOverlayId === ov.id && slide.overlayEditMode === 'text'){
+      openOverlayTextEditor(el, ov, slide, frame);
+    }
+  });
+}
+
+function addTextOverlayAction(){
+  const slide = activeSlide();
+  const frame = document.getElementById('statusImgFrame');
+  if(!slide.imageRawDataUrl || !frame) return;
+  pushUndoSnapshot();
+  finalizeActiveOverlay(slide, frame);
+  const ov = { id: statusUid(), text:'', xPct:50, yPct:50, sizeFrac:0.08, color:'#ffffff', align:'center' };
+  slide.textOverlays = slide.textOverlays || [];
+  slide.textOverlays.push(ov);
+  slide.activeOverlayId = ov.id;
+  slide.overlayEditMode = 'text';
+  renderOverlaysLayer(slide, frame);
+  renderComposerToolbar();
+  renderComposerBottomPanel();
+}
+
+// Switching the selected sticker is a small DOM patch (toggle a class,
+// tidy up whichever *other* sticker was active) — never a full layer
+// rebuild — because a full rebuild would replace the element the current
+// pointer gesture is captured on, silently breaking the drag already in
+// progress. Only the *previous* element (a different node) gets touched.
+function selectOverlay(el, ov, slide, frame){
+  const layer = frame.querySelector('.status-overlay-layer');
+  if(slide.activeOverlayId && slide.activeOverlayId !== ov.id){
+    const prevOv = (slide.textOverlays || []).find(o => o.id === slide.activeOverlayId);
+    const prevEl = layer && layer.querySelector(`[data-id="${slide.activeOverlayId}"]`);
+    if(prevOv && !(prevOv.text || '').trim()){
+      slide.textOverlays = slide.textOverlays.filter(o => o.id !== prevOv.id);
+      if(prevEl) prevEl.remove();
+    } else if(prevEl){
+      prevEl.classList.remove('active');
+      if(prevOv) prevEl.textContent = prevOv.text || '';
+    }
+  }
+  slide.activeOverlayId = ov.id;
+  slide.overlayEditMode = 'transform';
+  el.classList.add('active');
+  renderComposerToolbar();
+  renderComposerBottomPanel();
+}
+
+// A sticker that isn't selected yet gets selected on the very first
+// pointerdown (border + toolbar appear) and that same touch can immediately
+// turn into a drag if the finger moves — no need to select, release, then
+// separately drag. If the finger doesn't move, the sticker is simply left
+// selected; a second plain tap on an already-selected sticker (still no
+// movement) is what opens the text editor — that's what makes
+// repositioning an existing sticker reachable at all, since text-edit mode
+// always fully deselects on blur/done.
+function attachOverlayGestures(el, ov, slide, frame){
+  const pointers = new Map();
+  let dragStart = null, pinchStart = null, moved = false, wasAlreadyActive = false;
+
+  el.addEventListener('pointerdown', (e) => {
+    e.stopPropagation();
+    try{ el.setPointerCapture(e.pointerId); }catch(err){}
+    if(pointers.size === 0){
+      wasAlreadyActive = (slide.activeOverlayId === ov.id);
+      moved = false;
+      pushUndoSnapshot();
+    }
+    pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    if(slide.activeOverlayId !== ov.id) selectOverlay(el, ov, slide, frame);
+    if(pointers.size === 1){
+      const p = pointers.get(e.pointerId);
+      dragStart = { x:p.x, y:p.y, xPct0: ov.xPct, yPct0: ov.yPct };
+    } else if(pointers.size === 2){
+      const pts = Array.from(pointers.values());
+      pinchStart = { dist0: dist(pts[0], pts[1]) || 1, size0: ov.sizeFrac || 0.08 };
+    }
+  });
+  el.addEventListener('pointermove', (e) => {
+    if(!pointers.has(e.pointerId)) return;
+    pointers.set(e.pointerId, { x:e.clientX, y:e.clientY });
+    const rect = frame.getBoundingClientRect();
+    if(pointers.size === 1 && dragStart){
+      const p = pointers.get(e.pointerId);
+      const dxPct = ((p.x - dragStart.x) / rect.width) * 100;
+      const dyPct = ((p.y - dragStart.y) / rect.height) * 100;
+      if(Math.abs(dxPct) + Math.abs(dyPct) > 0.4) moved = true;
+      ov.xPct = clamp(dragStart.xPct0 + dxPct, 4, 96);
+      ov.yPct = clamp(dragStart.yPct0 + dyPct, 4, 96);
+      el.style.left = ov.xPct + '%'; el.style.top = ov.yPct + '%';
+    } else if(pointers.size === 2 && pinchStart){
+      const pts = Array.from(pointers.values());
+      const ratio = dist(pts[0], pts[1]) / pinchStart.dist0;
+      ov.sizeFrac = clamp(pinchStart.size0 * ratio, 0.03, 0.22);
+      el.style.fontSize = Math.max(10, ov.sizeFrac * rect.width) + 'px';
+      moved = true;
+    }
+  });
+  function endPointer(e){
+    pointers.delete(e.pointerId);
+    if(pointers.size === 0){
+      dragStart = null; pinchStart = null;
+      if(moved){ saveComposerDraft(); }
+      else if(wasAlreadyActive && slide.activeOverlayId === ov.id && slide.overlayEditMode !== 'text'){
+        slide.overlayEditMode = 'text';
+        openOverlayTextEditor(el, ov, slide, frame);
+        renderComposerToolbar();
+        renderComposerBottomPanel();
+      }
+      moved = false;
+    }
+  }
+  el.addEventListener('pointerup', endPointer);
+  el.addEventListener('pointercancel', endPointer);
+}
+
+function openOverlayTextEditor(el, ov, slide, frame){
+  el.classList.remove('placeholder');
+  el.textContent = '';
+  const ta = document.createElement('textarea');
+  ta.className = 'status-overlay-textarea';
+  ta.value = ov.text || '';
+  ta.style.color = ov.color || '#ffffff';
+  ta.style.textAlign = ov.align || 'center';
+  ta.style.fontSize = el.style.fontSize;
+  ta.maxLength = 140;
+  el.appendChild(ta);
+  requestAnimationFrame(() => { try{ ta.focus(); ta.select(); }catch(e){} });
+  ta.oninput = () => { ov.text = ta.value; };
+  ta.addEventListener('pointerdown', (e) => e.stopPropagation());
+  ta.addEventListener('blur', () => finalizeActiveOverlay(slide, frame));
+}
+
+function finalizeActiveOverlay(slide, frame){
+  if(!slide.activeOverlayId) return;
+  const ov = (slide.textOverlays || []).find(o => o.id === slide.activeOverlayId);
+  slide.activeOverlayId = null;
+  slide.overlayEditMode = null;
+  if(ov && !(ov.text || '').trim()){
+    slide.textOverlays = slide.textOverlays.filter(o => o.id !== ov.id);
+  }
+  renderOverlaysLayer(slide, frame);
+  renderComposerToolbar();
+  renderComposerBottomPanel();
+  saveComposerDraft();
 }
 
 function handleStatusImagePick(file){
   if(!file || !file.type || file.type.indexOf('image/') !== 0){ showToast('একটি ছবি বাছুন'); return; }
-  compressImageFile(file, 1080, 0.72).then(dataUrl => {
-    statusComposerState.mode = 'image';
-    statusComposerState.imageDataUrl = dataUrl;
+  compressImageFile(file, 1600, 0.88).then(dataUrl => {
+    const slide = activeSlide();
+    pushUndoSnapshot();
+    slide.mode = 'image';
+    slide.imageRawDataUrl = dataUrl;
+    slide.filterId = slide.filterId || 'normal';
+    slide.crop = { scale:1, offsetXFrac:0, offsetYFrac:0 };
+    slide.textOverlays = slide.textOverlays || [];
+    slide.activeOverlayId = null;
+    slide.overlayEditMode = null;
     renderComposerStage();
+    saveComposerDraft();
   }).catch(() => showToast('ছবি লোড করা যায়নি'));
 }
 
@@ -363,47 +847,352 @@ function compressImageFile(file, maxDim, quality){
   });
 }
 
-function submitStatus(){
-  if(!state.user || statusComposerState.sending) return;
-  const sendBtn = document.getElementById('statusCompSend');
-  let payload;
+function loadImageEl(src){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('image-decode-failed'));
+    img.src = src;
+  });
+}
 
-  if(statusComposerState.mode === 'image'){
-    if(!statusComposerState.imageDataUrl){ showToast('একটি ছবি বাছুন'); return; }
-    if(statusComposerState.imageDataUrl.length > 900000){ showToast('ছবিটি অনেক বড়, ছোট আকারের একটি ছবি দিন'); return; }
-    payload = { type:'image', imageData: statusComposerState.imageDataUrl, text:(statusComposerState.captionText||'').trim().slice(0,200) };
+// Bakes crop/zoom + filter + every text sticker into one final JPEG, at the
+// same aspect ratio the user actually edited in — this is why the image
+// viewer never needs to know about crop/filters/stickers at all.
+async function renderSlideToImageDataUrl(slide){
+  if(!slide.imageRawDataUrl) throw new Error('no-image');
+  const img = await loadImageEl(slide.imageRawDataUrl);
+  if(document.fonts && document.fonts.ready){ try{ await document.fonts.ready; }catch(e){} }
+
+  const MAX_DIM = 1080;
+  const aspect = slide.frameAspect || (9/16);
+  let outW, outH;
+  if(aspect >= 1){ outW = MAX_DIM; outH = Math.round(MAX_DIM / aspect); }
+  else { outH = MAX_DIM; outW = Math.round(MAX_DIM * aspect); }
+
+  const canvas = document.createElement('canvas');
+  canvas.width = outW; canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+
+  const filterCss = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
+  if(filterCss && 'filter' in ctx) ctx.filter = filterCss;
+
+  const scale = clamp(slide.crop.scale || 1, 1, 4);
+  const coverScale = Math.max(outW / img.naturalWidth, outH / img.naturalHeight);
+  const effScale = coverScale * scale;
+  const drawW = img.naturalWidth * effScale, drawH = img.naturalHeight * effScale;
+  const maxOffX = (scale - 1) / 2 * outW;
+  const maxOffY = (scale - 1) / 2 * outH;
+  const offX = clamp((slide.crop.offsetXFrac || 0) * outW, -maxOffX, maxOffX);
+  const offY = clamp((slide.crop.offsetYFrac || 0) * outH, -maxOffY, maxOffY);
+  const dx = (outW - drawW) / 2 + offX;
+  const dy = (outH - drawH) / 2 + offY;
+  ctx.drawImage(img, dx, dy, drawW, drawH);
+  ctx.filter = 'none';
+
+  (slide.textOverlays || []).forEach(ov => {
+    const text = (ov.text || '').trim();
+    if(!text) return;
+    const px = (ov.xPct / 100) * outW, py = (ov.yPct / 100) * outH;
+    const fontSize = Math.max(10, (ov.sizeFrac || 0.08) * outW);
+    ctx.font = `700 ${fontSize}px 'Hind Siliguri', sans-serif`;
+    ctx.fillStyle = ov.color || '#ffffff';
+    ctx.textAlign = ov.align || 'center';
+    ctx.textBaseline = 'middle';
+    const lines = text.split('\n');
+    const lineH = fontSize * 1.25;
+    const startY = py - ((lines.length - 1) * lineH) / 2;
+    lines.forEach((line, i) => ctx.fillText(line, px, startY + i * lineH));
+  });
+
+  let quality = 0.82;
+  let dataUrl = canvas.toDataURL('image/jpeg', quality);
+  while(dataUrl.length > 900000 && quality > 0.4){
+    quality -= 0.1;
+    dataUrl = canvas.toDataURL('image/jpeg', quality);
+  }
+  if(dataUrl.length > 900000) throw new Error('too-large');
+  return dataUrl;
+}
+
+// ---------- toolbar (mode/selection-dependent action icons) ----------
+function renderComposerToolbar(){
+  const bar = document.getElementById('statusCompToolbar');
+  if(!bar) return;
+  const slide = activeSlide();
+
+  if(slide.mode === 'text'){
+    const alignIcon = slide.align === 'left' ? 'align-left' : (slide.align === 'right' ? 'align-right' : 'align-center');
+    bar.innerHTML = `
+      <button type="button" class="status-comp-tool-btn" id="statusCompFontBtn">Aa</button>
+      <button type="button" class="status-comp-tool-btn" id="statusCompAlignBtn"><i class="fa-solid fa-${alignIcon}"></i></button>
+      <button type="button" class="status-comp-tool-btn status-comp-size-btn" id="statusCompSizeDown">A−</button>
+      <div class="status-comp-size-label">${toBn(Math.round(slide.size || 26))}</div>
+      <button type="button" class="status-comp-tool-btn status-comp-size-btn" id="statusCompSizeUp">A+</button>
+      <button type="button" class="status-comp-tool-btn ${slide.highlight ? 'active' : ''}" id="statusCompHighlightBtn" title="হাইলাইট"><i class="fa-solid fa-square"></i></button>
+      <label class="status-comp-tool-btn" id="statusCompImageBtn">
+        <i class="fa-solid fa-image"></i>
+        <input type="file" accept="image/*" id="statusCompFileInput" style="display:none;">
+      </label>`;
+    wireFileInput();
+    document.getElementById('statusCompFontBtn').onclick = () => {
+      pushUndoSnapshot();
+      slide.fontIndex = (slide.fontIndex + 1) % STATUS_FONTS.length;
+      const ta = document.getElementById('statusCompTextarea'); if(ta) applyTextareaFont(ta, slide);
+      saveComposerDraft();
+    };
+    document.getElementById('statusCompAlignBtn').onclick = () => {
+      pushUndoSnapshot();
+      slide.align = slide.align === 'left' ? 'center' : (slide.align === 'center' ? 'right' : 'left');
+      const ta = document.getElementById('statusCompTextarea'); if(ta) ta.style.textAlign = slide.align;
+      renderComposerToolbar();
+      saveComposerDraft();
+    };
+    document.getElementById('statusCompSizeDown').onclick = () => {
+      pushUndoSnapshot();
+      slide.size = clamp((slide.size || 26) - 2, 16, 44);
+      const ta = document.getElementById('statusCompTextarea'); if(ta) ta.style.fontSize = slide.size + 'px';
+      renderComposerToolbar();
+      saveComposerDraft();
+    };
+    document.getElementById('statusCompSizeUp').onclick = () => {
+      pushUndoSnapshot();
+      slide.size = clamp((slide.size || 26) + 2, 16, 44);
+      const ta = document.getElementById('statusCompTextarea'); if(ta) ta.style.fontSize = slide.size + 'px';
+      renderComposerToolbar();
+      saveComposerDraft();
+    };
+    document.getElementById('statusCompHighlightBtn').onclick = () => {
+      pushUndoSnapshot();
+      slide.highlight = !slide.highlight;
+      const ta = document.getElementById('statusCompTextarea'); if(ta) ta.classList.toggle('highlight', slide.highlight);
+      renderComposerToolbar();
+      saveComposerDraft();
+    };
+  } else if(slide.activeOverlayId){
+    const ov = (slide.textOverlays || []).find(o => o.id === slide.activeOverlayId);
+    const alignIcon = ov && ov.align === 'left' ? 'align-left' : (ov && ov.align === 'right' ? 'align-right' : 'align-center');
+    bar.innerHTML = `
+      <button type="button" class="status-comp-tool-btn" id="statusCompOverlayDoneBtn"><i class="fa-solid fa-check"></i></button>
+      <button type="button" class="status-comp-tool-btn" id="statusCompOverlayDeleteBtn"><i class="fa-solid fa-trash"></i></button>
+      <button type="button" class="status-comp-tool-btn" id="statusCompOverlayAlignBtn"><i class="fa-solid fa-${alignIcon}"></i></button>`;
+    // A sticker's textarea may currently have focus; without this, tapping
+    // one of these buttons would blur it first (running the textarea's own
+    // blur→finalize cleanup) before the click handler below even runs,
+    // racing against — and sometimes cancelling out — the action just
+    // tapped. preventDefault() on pointerdown keeps focus put so the click
+    // handlers below always see consistent, current state.
+    const keepFocusPut = (e) => e.preventDefault();
+    ['statusCompOverlayDoneBtn','statusCompOverlayDeleteBtn','statusCompOverlayAlignBtn'].forEach(id => {
+      const b = document.getElementById(id);
+      if(b) b.addEventListener('pointerdown', keepFocusPut);
+    });
+    document.getElementById('statusCompOverlayDoneBtn').onclick = () => {
+      const frame = document.getElementById('statusImgFrame');
+      if(frame) finalizeActiveOverlay(slide, frame);
+    };
+    document.getElementById('statusCompOverlayDeleteBtn').onclick = () => {
+      if(!ov) return;
+      pushUndoSnapshot();
+      slide.textOverlays = slide.textOverlays.filter(o => o.id !== ov.id);
+      slide.activeOverlayId = null; slide.overlayEditMode = null;
+      const frame = document.getElementById('statusImgFrame');
+      if(frame) renderOverlaysLayer(slide, frame);
+      renderComposerToolbar();
+      renderComposerBottomPanel();
+      saveComposerDraft();
+    };
+    document.getElementById('statusCompOverlayAlignBtn').onclick = () => {
+      if(!ov) return;
+      pushUndoSnapshot();
+      ov.align = ov.align === 'left' ? 'center' : (ov.align === 'center' ? 'right' : 'left');
+      const frame = document.getElementById('statusImgFrame');
+      if(frame) renderOverlaysLayer(slide, frame);
+      renderComposerToolbar();
+      saveComposerDraft();
+    };
   } else {
-    const txt = (statusComposerState.textValue || '').trim();
-    if(!txt){ showToast('কিছু লিখুন'); return; }
-    payload = { type:'text', text: txt.slice(0,700), bgIndex: statusComposerState.colorIndex, font: STATUS_FONTS[statusComposerState.fontIndex].id };
+    bar.innerHTML = `
+      <button type="button" class="status-comp-tool-btn" id="statusCompAddTextBtn">Aa</button>
+      <label class="status-comp-tool-btn" id="statusCompImageBtn">
+        <i class="fa-solid fa-image"></i>
+        <input type="file" accept="image/*" id="statusCompFileInput" style="display:none;">
+      </label>`;
+    wireFileInput();
+    document.getElementById('statusCompAddTextBtn').onclick = addTextOverlayAction;
+  }
+}
+function wireFileInput(){
+  const fileInput = document.getElementById('statusCompFileInput');
+  if(fileInput) fileInput.addEventListener('change', (e) => {
+    const file = e.target.files && e.target.files[0];
+    if(file) handleStatusImagePick(file);
+    e.target.value = '';
+  });
+}
+
+// ---------- bottom panel (colour/gradient/text-colour tabs, or filter chips) ----------
+function renderComposerBottomPanel(){
+  const panel = document.getElementById('statusCompBottomPanel');
+  if(!panel) return;
+  const slide = activeSlide();
+
+  if(slide.mode === 'text'){
+    const tab = slide.colorPanelTab || 'solid';
+    let swatchArr, currentVal, applyFn;
+    if(tab === 'textcolor'){
+      swatchArr = STATUS_TEXT_COLORS;
+      currentVal = slide.textColor || '#ffffff';
+      applyFn = (val) => {
+        pushUndoSnapshot(); slide.textColor = val;
+        const ta = document.getElementById('statusCompTextarea'); if(ta) ta.style.color = val;
+        saveComposerDraft();
+      };
+    } else if(tab === 'gradient'){
+      swatchArr = STATUS_BG_SWATCHES.slice(8);
+      currentVal = slide.bg || STATUS_BG_SWATCHES[0];
+      applyFn = (val) => {
+        pushUndoSnapshot(); slide.bg = val;
+        const stage = document.getElementById('statusCompStage'); if(stage) stage.style.background = val;
+        saveComposerDraft();
+      };
+    } else {
+      swatchArr = STATUS_BG_SWATCHES.slice(0, 8);
+      currentVal = slide.bg || STATUS_BG_SWATCHES[0];
+      applyFn = (val) => {
+        pushUndoSnapshot(); slide.bg = val;
+        const stage = document.getElementById('statusCompStage'); if(stage) stage.style.background = val;
+        saveComposerDraft();
+      };
+    }
+    panel.innerHTML = `
+      <div class="status-comp-panel-tabs">
+        <button type="button" class="status-comp-panel-tab ${tab === 'solid' ? 'active' : ''}" data-tab="solid">সলিড</button>
+        <button type="button" class="status-comp-panel-tab ${tab === 'gradient' ? 'active' : ''}" data-tab="gradient">গ্রেডিয়েন্ট</button>
+        <button type="button" class="status-comp-panel-tab ${tab === 'textcolor' ? 'active' : ''}" data-tab="textcolor">টেক্সট রঙ</button>
+      </div>
+      <div class="status-comp-swatch-row">${swatchArr.map(v => `<button type="button" class="status-comp-swatch-dot ${v === currentVal ? 'active' : ''}" data-v="${v}" style="background:${v}"></button>`).join('')}</div>`;
+    panel.querySelectorAll('.status-comp-panel-tab').forEach(btn => {
+      btn.onclick = () => { slide.colorPanelTab = btn.dataset.tab; renderComposerBottomPanel(); };
+    });
+    panel.querySelectorAll('.status-comp-swatch-dot').forEach(btn => {
+      btn.onclick = () => { applyFn(btn.dataset.v); renderComposerBottomPanel(); };
+    });
+  } else if(slide.activeOverlayId){
+    const ov = (slide.textOverlays || []).find(o => o.id === slide.activeOverlayId);
+    panel.innerHTML = `<div class="status-comp-swatch-row">${STATUS_TEXT_COLORS.map(v => `<button type="button" class="status-comp-swatch-dot ${ov && ov.color === v ? 'active' : ''}" data-v="${v}" style="background:${v}"></button>`).join('')}</div>`;
+    panel.querySelectorAll('.status-comp-swatch-dot').forEach(btn => {
+      btn.addEventListener('pointerdown', (e) => e.preventDefault()); // keep the sticker's textarea focused, see overlay toolbar buttons above
+      btn.onclick = () => {
+        if(!ov) return;
+        pushUndoSnapshot();
+        ov.color = btn.dataset.v;
+        const frame = document.getElementById('statusImgFrame');
+        if(frame) renderOverlaysLayer(slide, frame);
+        renderComposerBottomPanel();
+        saveComposerDraft();
+      };
+    });
+  } else if(slide.mode === 'image'){
+    panel.innerHTML = `<div class="status-comp-filter-row">${STATUS_FILTERS.map(f => `<button type="button" class="status-comp-filter-chip ${slide.filterId === f.id ? 'active' : ''}" data-id="${f.id}">${f.label}</button>`).join('')}</div>`;
+    panel.querySelectorAll('.status-comp-filter-chip').forEach(btn => {
+      btn.onclick = () => {
+        pushUndoSnapshot();
+        slide.filterId = btn.dataset.id;
+        const img = document.getElementById('statusCropImg');
+        if(img) img.style.filter = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
+        renderComposerBottomPanel();
+        saveComposerDraft();
+      };
+    });
+  } else {
+    panel.innerHTML = '';
+  }
+}
+
+// ---------- draft persistence (IDBKV) ----------
+function saveComposerDraft(){
+  try{
+    const slides = statusComposerState.slides.map(s => ({
+      mode:s.mode, bg:s.bg, colorPanelTab:s.colorPanelTab, fontIndex:s.fontIndex, align:s.align, size:s.size,
+      textColor:s.textColor, highlight:s.highlight, textValue:s.textValue,
+      imageRawDataUrl:s.imageRawDataUrl, filterId:s.filterId, frameAspect:s.frameAspect, crop:s.crop,
+      textOverlays: (s.textOverlays || []).map(o => ({ ...o }))
+    }));
+    const hasContent = slides.some(s => (s.textValue && s.textValue.trim()) || s.imageRawDataUrl);
+    if(!hasContent){ clearComposerDraft(); return; }
+    IDBKV.set(STATUS_DRAFT_KEY, JSON.stringify({ slides, activeIndex: statusComposerState.activeIndex }));
+  }catch(e){}
+}
+function loadComposerDraft(){
+  try{
+    const raw = IDBKV.get(STATUS_DRAFT_KEY);
+    if(!raw) return null;
+    return JSON.parse(raw);
+  }catch(e){ return null; }
+}
+function clearComposerDraft(){
+  try{ IDBKV.remove(STATUS_DRAFT_KEY); }catch(e){}
+}
+
+// ---------- send (bakes every image slide, uploads all slides in order) ----------
+async function submitStatus(){
+  if(!state.user || statusComposerState.sending) return;
+  finalizeActiveOverlayIfAny();
+  const slides = statusComposerState.slides;
+  for(const s of slides){
+    if(s.mode === 'image'){ if(!s.imageRawDataUrl){ showToast('একটি ছবি বাছুন'); return; } }
+    else if(!(s.textValue || '').trim()){ showToast('কিছু লিখুন'); return; }
   }
 
   statusComposerState.sending = true;
+  const sendBtn = document.getElementById('statusCompSend');
   if(sendBtn){ sendBtn.disabled = true; sendBtn.classList.add('busy'); sendBtn.innerHTML = '<i class="fa-solid fa-circle-notch"></i>'; }
+  const counterEl = document.getElementById('statusCompCounter');
+  const baseNow = Date.now();
 
-  const now = Date.now();
-  const doc = Object.assign({
-    uid: state.user.uid,
-    name: state.user.name || 'ব্যবহারকারী',
-    avatarColor: state.user.avatarColor || '',
-    avatarIcon: state.user.avatarIcon || '',
-    createdAt: now,
-    expiresAt: now + STATUS_TTL_MS,
-    viewCount: 0
-  }, payload);
-
-  fbDb.collection('statuses').add(doc).then(() => {
-    showToast('স্ট্যাটাস আপলোড হয়েছে');
-    closeStatusComposer();
+  try{
+    for(let i = 0; i < slides.length; i++){
+      if(counterEl) counterEl.textContent = slides.length > 1 ? `${toBn(i + 1)}/${toBn(slides.length)} পাঠানো হচ্ছে...` : 'পাঠানো হচ্ছে...';
+      const s = slides[i];
+      let payload;
+      if(s.mode === 'image'){
+        const imageData = await renderSlideToImageDataUrl(s);
+        payload = { type:'image', imageData };
+      } else {
+        payload = {
+          type:'text', text: (s.textValue || '').trim().slice(0, 700),
+          bg: s.bg || STATUS_BG_SWATCHES[0], font: STATUS_FONTS[s.fontIndex || 0].id,
+          align: s.align || 'center', size: Math.round(s.size || 26),
+          textColor: s.textColor || '#ffffff', highlight: !!s.highlight
+        };
+      }
+      const createdAt = baseNow + i * 50;
+      const doc = Object.assign({
+        uid: state.user.uid,
+        name: state.user.name || 'ব্যবহারকারী',
+        avatarColor: state.user.avatarColor || '',
+        avatarIcon: state.user.avatarIcon || '',
+        createdAt, expiresAt: createdAt + STATUS_TTL_MS,
+        viewCount: 0, reactCount: 0
+      }, payload);
+      await fbDb.collection('statuses').add(doc);
+    }
+    showToast(slides.length > 1 ? 'সব স্ট্যাটাস আপলোড হয়েছে' : 'স্ট্যাটাস আপলোড হয়েছে');
+    clearComposerDraft();
+    statusComposerState.sending = false;
+    const ov = document.getElementById('statusComposerOverlay');
+    if(ov) ov.classList.remove('open');
+    document.body.style.overflow = '';
     statusRowFetchedAt = 0;
     renderStatusRow();
-  }).catch(err => {
+  } catch(err){
     console.warn('status upload failed:', err);
     showToast('স্ট্যাটাস আপলোড করা যায়নি, আবার চেষ্টা করুন');
-  }).finally(() => {
     statusComposerState.sending = false;
     if(sendBtn){ sendBtn.disabled = false; sendBtn.classList.remove('busy'); sendBtn.innerHTML = '<i class="fa-solid fa-check"></i>'; }
-  });
+    renderComposerCounter();
+  }
 }
 
 // ==================================================================
@@ -428,12 +1217,17 @@ function ensureStatusViewerOverlay(){
     </div>
     <div class="status-view-stage" id="statusViewStage">
       <div class="status-view-tap-zone left" id="statusViewTapLeft"></div>
+      <div class="status-view-tap-zone center" id="statusViewTapCenter"></div>
       <div class="status-view-tap-zone right" id="statusViewTapRight"></div>
       <div id="statusViewItems"></div>
+      <div id="statusViewHeartPopLayer"></div>
     </div>
     <div class="status-view-footer" id="statusViewFooter" style="display:none;">
       <button type="button" class="status-view-viewers-btn" id="statusViewViewersBtn">
         <i class="fa-solid fa-eye"></i><span id="statusViewViewersCount">০</span>&nbsp;জন দেখেছে
+      </button>
+      <button type="button" class="status-view-react-btn" id="statusViewReactBtn">
+        <i class="fa-regular fa-heart"></i><span id="statusViewReactCount"></span>
       </button>
     </div>`;
   document.body.appendChild(ov);
@@ -441,9 +1235,11 @@ function ensureStatusViewerOverlay(){
   document.getElementById('statusViewCloseBtn').onclick = closeStatusViewer;
   document.getElementById('statusViewDeleteBtn').onclick = confirmDeleteCurrentStatusItem;
   document.getElementById('statusViewViewersBtn').onclick = openStatusViewersSheet;
+  document.getElementById('statusViewReactBtn').onclick = handleReactButtonTap;
 
   attachStatusTapZone(document.getElementById('statusViewTapLeft'), goToPrevStatusItem);
   attachStatusTapZone(document.getElementById('statusViewTapRight'), goToNextStatusItem);
+  attachStatusCenterZone(document.getElementById('statusViewTapCenter'));
 
   // Swipe down anywhere on the stage to close, WhatsApp-style.
   const stage = document.getElementById('statusViewStage');
@@ -477,6 +1273,50 @@ function attachStatusTapZone(zone, onTap){
   };
   zone.addEventListener('pointerup', release);
   zone.addEventListener('pointercancel', () => { clearTimeout(holdTimeout); if(holdActive){ holdActive = false; resumeStatusItemTimer(); } });
+}
+
+// The middle strip between the left/right nav zones never navigated
+// anything before, so it's a safe home for "double-tap to love-react",
+// WhatsApp/Instagram-style, without touching the existing tap-to-advance
+// behaviour at all. A held press here still pauses, same as the sides.
+function attachStatusCenterZone(zone){
+  if(!zone) return;
+  let holdTimeout = null, holdActive = false, lastTapAt = 0;
+  zone.addEventListener('pointerdown', () => {
+    holdActive = false; clearTimeout(holdTimeout);
+    holdTimeout = setTimeout(() => { holdActive = true; pauseStatusItemTimer(); }, 180);
+  });
+  zone.addEventListener('pointerup', (e) => {
+    clearTimeout(holdTimeout);
+    if(holdActive){ holdActive = false; resumeStatusItemTimer(); return; }
+    const now = Date.now();
+    if(now - lastTapAt < STATUS_DOUBLE_TAP_MS){
+      lastTapAt = 0;
+      spawnHeartPop(e);
+      const group = statusViewerState.groups[statusViewerState.groupIndex];
+      const item = group && group.items[statusViewerState.itemIndex];
+      if(group && item && state.user && group.uid !== state.user.uid && !getReactedStatusIds().has(item.id)){
+        toggleStatusReaction(item, group);
+      }
+    } else {
+      lastTapAt = now;
+    }
+  });
+  zone.addEventListener('pointercancel', () => { clearTimeout(holdTimeout); if(holdActive){ holdActive = false; resumeStatusItemTimer(); } });
+}
+
+function spawnHeartPop(e){
+  const stage = document.getElementById('statusViewStage');
+  const layer = document.getElementById('statusViewHeartPopLayer');
+  if(!stage || !layer) return;
+  const rect = stage.getBoundingClientRect();
+  const x = (e.clientX != null ? e.clientX : rect.left + rect.width / 2) - rect.left;
+  const y = (e.clientY != null ? e.clientY : rect.top + rect.height / 2) - rect.top;
+  const heart = document.createElement('i');
+  heart.className = 'fa-solid fa-heart status-heart-pop';
+  heart.style.left = x + 'px'; heart.style.top = y + 'px';
+  layer.appendChild(heart);
+  setTimeout(() => heart.remove(), 700);
 }
 
 function openStatusViewer(groups, groupIndex, itemIndex){
@@ -518,7 +1358,7 @@ function renderStatusViewerGroup(){
   document.getElementById('statusViewItems').innerHTML = group.items.map((it,i) => statusViewItemHtml(it,i)).join('');
 
   document.getElementById('statusViewDeleteBtn').style.display = isOwn ? 'flex' : 'none';
-  document.getElementById('statusViewFooter').style.display = isOwn ? 'flex' : 'none';
+  document.getElementById('statusViewFooter').style.display = 'flex';
 
   showStatusViewerItem(statusViewerState.itemIndex);
 }
@@ -531,9 +1371,13 @@ function statusViewItemHtml(it, i){
     </div>`;
   }
   const font = STATUS_FONTS.find(f => f.id === it.font) || STATUS_FONTS[0];
-  const bg = STATUS_BG_COLORS[Number.isInteger(it.bgIndex) ? it.bgIndex : 0] || STATUS_BG_COLORS[0];
+  const bg = it.bg || STATUS_BG_SWATCHES[Number.isInteger(it.bgIndex) ? it.bgIndex : 0] || STATUS_BG_SWATCHES[0];
+  const align = it.align || 'center';
+  const size = (typeof it.size === 'number' && it.size >= 14 && it.size <= 56) ? it.size : 28;
+  const color = it.textColor || '#ffffff';
+  const textCls = 'status-view-text' + (it.highlight ? ' highlight' : '');
   return `<div class="status-view-item" data-i="${i}" style="background:${bg};">
-    <div class="status-view-text" style="font-family:${font.family};font-weight:${font.weight||600};${font.upper?'text-transform:uppercase;':''}">${escapeHtml(it.text||'')}</div>
+    <div class="${textCls}" style="font-family:${font.family};font-weight:${font.weight||600};${font.upper?'text-transform:uppercase;':''}text-align:${align};color:${color};font-size:${size}px;">${escapeHtml(it.text||'')}</div>
   </div>`;
 }
 
@@ -574,12 +1418,26 @@ function showStatusViewerItem(idx){
 
   const item = group.items[idx];
   document.getElementById('statusViewTime').textContent = typeof timeAgoBn === 'function' ? timeAgoBn(item.createdAt) : '';
-  if(group.uid === state.user.uid){
+
+  const isOwn = group.uid === state.user.uid;
+  const viewersBtn = document.getElementById('statusViewViewersBtn');
+  const reactBtn = document.getElementById('statusViewReactBtn');
+  if(isOwn){
+    viewersBtn.style.display = 'flex';
     document.getElementById('statusViewViewersCount').textContent = toBn(item.viewCount || 0);
+    reactBtn.style.display = item.reactCount ? 'flex' : 'none';
+    reactBtn.classList.remove('reacted');
+    reactBtn.querySelector('i').className = 'fa-regular fa-heart';
+    document.getElementById('statusViewReactCount').textContent = item.reactCount ? toBn(item.reactCount) : '';
+  } else {
+    viewersBtn.style.display = 'none';
+    reactBtn.style.display = 'flex';
+    const reacted = getReactedStatusIds().has(item.id);
+    updateReactBtnUI(item, reacted);
   }
 
   markStatusSeenLocally(item.id);
-  if(group.uid !== state.user.uid) recordStatusView(item);
+  if(!isOwn) recordStatusView(item);
 
   startStatusItemTimer(idx, STATUS_ITEM_MS);
 }
@@ -657,7 +1515,58 @@ function recordStatusView(item){
   }).catch(err => console.warn('status view record failed:', err));
 }
 
-// ---------- "কারা দেখেছে" (who viewed) bottom sheet — own status only ----------
+// ---------- Love reaction (double-tap the middle of the screen, or the heart button) ----------
+function toggleStatusReaction(item, group){
+  if(!state.user || !item || !group || group.uid === state.user.uid) return;
+  if(typeof fbDb === 'undefined' || !fbDb) return;
+  const reacted = getReactedStatusIds().has(item.id);
+  const statusRef = fbDb.collection('statuses').doc(item.id);
+  const reactionRef = statusRef.collection('reactions').doc(state.user.uid);
+  if(reacted){
+    unmarkStatusReactedLocally(item.id);
+    item.reactCount = Math.max(0, (item.reactCount || 0) - 1);
+    updateReactBtnUI(item, false);
+    reactionRef.delete()
+      .then(() => statusRef.update({ reactCount: firebase.firestore.FieldValue.increment(-1) }))
+      .catch(err => {
+        console.warn('unreact failed:', err);
+        markStatusReactedLocally(item.id);
+        item.reactCount = (item.reactCount || 0) + 1;
+        updateReactBtnUI(item, true);
+      });
+  } else {
+    markStatusReactedLocally(item.id);
+    item.reactCount = (item.reactCount || 0) + 1;
+    updateReactBtnUI(item, true);
+    const doc = { name: state.user.name || 'ব্যবহারকারী', avatarColor: state.user.avatarColor || '', avatarIcon: state.user.avatarIcon || '', reactedAt: Date.now(), type:'love' };
+    reactionRef.set(doc)
+      .then(() => statusRef.update({ reactCount: firebase.firestore.FieldValue.increment(1) }))
+      .catch(err => {
+        console.warn('react failed:', err);
+        unmarkStatusReactedLocally(item.id);
+        item.reactCount = Math.max(0, (item.reactCount || 0) - 1);
+        updateReactBtnUI(item, false);
+      });
+  }
+}
+function updateReactBtnUI(item, reacted){
+  const btn = document.getElementById('statusViewReactBtn');
+  if(!btn) return;
+  btn.classList.toggle('reacted', reacted);
+  const icon = btn.querySelector('i'); if(icon) icon.className = reacted ? 'fa-solid fa-heart' : 'fa-regular fa-heart';
+  const countEl = document.getElementById('statusViewReactCount');
+  if(countEl) countEl.textContent = item.reactCount ? toBn(item.reactCount) : '';
+}
+function handleReactButtonTap(){
+  const group = statusViewerState.groups[statusViewerState.groupIndex];
+  if(!group) return;
+  const item = group.items[statusViewerState.itemIndex];
+  if(!item) return;
+  toggleStatusReaction(item, group);
+}
+
+// ---------- "কারা দেখেছে" (who viewed) bottom sheet — own status only,
+// each viewer who also reacted gets a small heart mark next to their name ----------
 function ensureStatusViewersSheet(){
   if(document.getElementById('statusViewersSheet')) return;
   const scrim = document.createElement('div');
@@ -688,13 +1597,20 @@ function openStatusViewersSheet(){
   const list = document.getElementById('statusViewersList');
   list.innerHTML = `<div class="status-viewers-empty">লোড হচ্ছে...</div>`;
 
-  fbDb.collection('statuses').doc(item.id).collection('views').orderBy('viewedAt','desc').get().then(snap => {
-    if(snap.empty){ list.innerHTML = `<div class="status-viewers-empty">এখনো কেউ দেখেনি</div>`; return; }
-    list.innerHTML = snap.docs.map(d => {
+  const statusRef = fbDb.collection('statuses').doc(item.id);
+  Promise.all([
+    statusRef.collection('views').orderBy('viewedAt','desc').get(),
+    statusRef.collection('reactions').get()
+  ]).then(([viewsSnap, reactsSnap]) => {
+    if(viewsSnap.empty){ list.innerHTML = `<div class="status-viewers-empty">এখনো কেউ দেখেনি</div>`; return; }
+    const reactedUids = new Set(reactsSnap.docs.map(d => d.id));
+    list.innerHTML = viewsSnap.docs.map(d => {
       const v = d.data();
+      const reacted = reactedUids.has(d.id);
       return `<div class="status-viewer-row">
         <div class="status-viewer-avatar" style="background:${v.avatarColor || PROFILE_AVATAR_COLORS[0]}">${avatarGlyph({ name:v.name, avatarIcon:v.avatarIcon })}</div>
         <div class="status-viewer-name">${escapeHtml(v.name || 'ব্যবহারকারী')}</div>
+        ${reacted ? '<i class="fa-solid fa-heart status-viewer-heart"></i>' : ''}
         <div class="status-viewer-time">${typeof timeAgoBn === 'function' ? timeAgoBn(v.viewedAt) : ''}</div>
       </div>`;
     }).join('');
@@ -722,9 +1638,13 @@ function confirmDeleteCurrentStatusItem(){
 
 function deleteStatusItem(item, group){
   const statusRef = fbDb.collection('statuses').doc(item.id);
-  statusRef.collection('views').get().then(snap => {
+  Promise.all([
+    statusRef.collection('views').get(),
+    statusRef.collection('reactions').get()
+  ]).then(([viewsSnap, reactsSnap]) => {
     const batch = fbDb.batch();
-    snap.forEach(d => batch.delete(d.ref));
+    viewsSnap.forEach(d => batch.delete(d.ref));
+    reactsSnap.forEach(d => batch.delete(d.ref));
     batch.delete(statusRef);
     return batch.commit();
   }).then(() => {
