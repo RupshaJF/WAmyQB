@@ -124,38 +124,65 @@ service cloud.firestore {
     }
 
     // ------------------------------------------------------------------
-    // WhatsApp-স্টাইল "স্ট্যাটাস" ফিচার (js/status.js) — টেক্সট/ছবি স্ট্যাটাস,
+    // WhatsApp-স্টাইল "স্ট্যাটাস" ফিচার (js/status.js) — টেক্সট/ছবি স্ট্যাটাস
+    // (একাধিক স্লাইড একসাথে পোস্ট করা যায়, প্রতিটা এখানে আলাদা ডকুমেন্ট),
     // ২৪ ঘণ্টা মেয়াদ (expiresAt দিয়ে client-side ফিল্টার হয়, তাই মেয়াদ
-    // শেষ হলে আলাদা করে ডিলিট না করেও সেটা আর কারো ফিডে দেখায় না), এবং
-    // "কারা দেখেছে" সাব-কালেকশন। দেখা বা পোস্ট করা — দুটোর জন্যই সাইন-ইন
-    // করা বাধ্যতামূলক (allow read/write সবই request.auth != null চায়)।
+    // শেষ হলে আলাদা করে ডিলিট না করেও সেটা আর কারো ফিডে দেখায় না),
+    // "কারা দেখেছে" ও "লাভ রিয়েক্ট" সাব-কালেকশন। দেখা বা পোস্ট করা —
+    // দুটোর জন্যই সাইন-ইন করা বাধ্যতামূলক (allow read/write সবই
+    // request.auth != null চায়)।
+    //
+    // create/update স্কিমা ইচ্ছাকৃতভাবে backward-compatible: viewCount ও
+    // reactCount সহ নতুন সব ফিল্ড optional, তাই ডিপ্লয়ের সময় একটা পুরোনো
+    // cached ক্লায়েন্ট (নতুন ফিল্ডগুলো না পাঠিয়ে) স্ট্যাটাস পোস্ট/রিয়েক্ট
+    // করতে গেলেও ভেঙে পড়বে না।
     // ------------------------------------------------------------------
     match /statuses/{statusId} {
       allow read: if request.auth != null;
 
       allow create: if request.auth != null
         && request.resource.data.uid == request.auth.uid
-        && request.resource.data.keys().hasOnly(['uid','name','avatarColor','avatarIcon','type','text','bgIndex','font','imageData','createdAt','expiresAt','viewCount'])
-        && request.resource.data.keys().hasAll(['uid','name','avatarColor','avatarIcon','type','createdAt','expiresAt','viewCount'])
+        && request.resource.data.keys().hasOnly(['uid','name','avatarColor','avatarIcon','type','text','bgIndex','bg','font','align','size','textColor','highlight','imageData','createdAt','expiresAt','viewCount','reactCount'])
+        && request.resource.data.keys().hasAll(['uid','name','avatarColor','avatarIcon','type','createdAt','expiresAt'])
         && request.resource.data.name is string && request.resource.data.name.size() <= 120
         && request.resource.data.avatarColor is string
         && request.resource.data.avatarIcon is string
         && request.resource.data.type in ['text','image']
         && (!('text' in request.resource.data) || (request.resource.data.text is string && request.resource.data.text.size() <= 700))
         && (!('bgIndex' in request.resource.data) || request.resource.data.bgIndex is int)
+        && (!('bg' in request.resource.data) || request.resource.data.bg in [
+              '#2E6F5E','#7A2E44','#3D4F8A','#6B3F8A','#8A4A2E','#2E6B8A','#5A6B2E','#3A3A46',
+              'linear-gradient(135deg,#2E6F5E,#123B2C)','linear-gradient(135deg,#7A2E44,#3A0F1E)',
+              'linear-gradient(135deg,#3D4F8A,#141B3D)','linear-gradient(135deg,#6B3F8A,#24123D)',
+              'linear-gradient(135deg,#8A4A2E,#3A2110)','linear-gradient(135deg,#2E6B8A,#0F2A38)',
+              'linear-gradient(135deg,#5A6B2E,#22280F)','linear-gradient(135deg,#3A3A46,#16161C)'
+            ])
         && (!('font' in request.resource.data) || request.resource.data.font is string)
+        && (!('align' in request.resource.data) || request.resource.data.align in ['left','center','right'])
+        && (!('size' in request.resource.data) || (request.resource.data.size is number && request.resource.data.size >= 14 && request.resource.data.size <= 56))
+        && (!('textColor' in request.resource.data) || (request.resource.data.textColor is string && request.resource.data.textColor.matches('^#[0-9A-Fa-f]{6}$')))
+        && (!('highlight' in request.resource.data) || request.resource.data.highlight is bool)
         && (!('imageData' in request.resource.data) || (request.resource.data.imageData is string && request.resource.data.imageData.size() <= 900000))
         && request.resource.data.createdAt is number
         && request.resource.data.expiresAt is number
         && request.resource.data.expiresAt > request.resource.data.createdAt
-        && request.resource.data.viewCount == 0;
+        && (!('viewCount' in request.resource.data) || request.resource.data.viewCount == 0)
+        && (!('reactCount' in request.resource.data) || request.resource.data.reactCount == 0);
 
-      // মালিক নিজে যেকোনো ফিল্ড বদলাতে পারবে না — শুধু viewCount বাড়ানো
-      // যাবে, এবং সেটাও যে কোনো সাইন-ইন করা ব্যবহারকারী (একজন ভিউয়ার
-      // নিজের ভিউ রেকর্ড করার সময়) করতে পারবে, ঠিক এক করে বাড়িয়ে।
+      // মালিক নিজে যেকোনো ফিল্ড বদলাতে পারবে না — শুধু viewCount ঠিক এক
+      // করে বাড়ানো (যেকোনো সাইন-ইন করা ভিউয়ার নিজের ভিউ রেকর্ড করার সময়)
+      // এবং reactCount ঠিক এক করে বাড়ানো/কমানো (রিয়েক্ট/আন-রিয়েক্ট টগল করার
+      // সময়) — এই দুটোর যেকোনো একটা বা দুটোই একসাথে, একই আপডেটে চলবে।
+      // resource.data-এ reactCount না থাকলে (পুরোনো ডকুমেন্ট) সেটাকে ০ ধরে
+      // হিসাব করা হয়, যাতে রোলআউটের মাঝামাঝি সময়ের স্ট্যাটাসেও রিয়েক্ট
+      // করা যায়।
       allow update: if request.auth != null
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount'])
-        && request.resource.data.viewCount == resource.data.viewCount + 1;
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['viewCount','reactCount'])
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['viewCount'])
+            || request.resource.data.viewCount == resource.data.viewCount + 1)
+        && (!request.resource.data.diff(resource.data).affectedKeys().hasAny(['reactCount'])
+            || request.resource.data.reactCount == (('reactCount' in resource.data) ? resource.data.reactCount : 0) + 1
+            || request.resource.data.reactCount == (('reactCount' in resource.data) ? resource.data.reactCount : 0) - 1);
 
       allow delete: if request.auth != null && resource.data.uid == request.auth.uid;
 
@@ -168,6 +195,24 @@ service cloud.firestore {
         allow update: if false;
         allow delete: if request.auth != null
           && get(/databases/$(database)/documents/statuses/$(statusId)).data.uid == request.auth.uid;
+      }
+
+      // লাভ রিয়েক্ট — যে কেউ নিজের uid-এর ডকুমেন্ট বসিয়ে/মুছে রিয়েক্ট
+      // টগল করতে পারে; স্ট্যাটাসের মালিকও মুছতে পারে (নিজের পুরো স্ট্যাটাস
+      // ডিলিট করার সময় ব্যাচে সব রিয়েক্ট সাফ করার জন্য, views সাবকালেকশনের
+      // মতোই)।
+      match /reactions/{reactorUid} {
+        allow read: if request.auth != null;
+        allow create: if request.auth != null && request.auth.uid == reactorUid
+          && request.resource.data.keys().hasOnly(['name','avatarColor','avatarIcon','reactedAt','type'])
+          && request.resource.data.keys().hasAll(['name','reactedAt','type'])
+          && request.resource.data.name is string && request.resource.data.name.size() <= 120
+          && request.resource.data.type == 'love'
+          && request.resource.data.reactedAt is number;
+        allow update: if false;
+        allow delete: if request.auth != null
+          && (request.auth.uid == reactorUid
+              || get(/databases/$(database)/documents/statuses/$(statusId)).data.uid == request.auth.uid);
       }
     }
 
