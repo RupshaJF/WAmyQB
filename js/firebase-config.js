@@ -43,11 +43,11 @@
 
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDba6MzA2OfawaQrdqSoP-3_ew6xldJIX4",
-  authDomain: "quranfreeapps.firebaseapp.com",
-  projectId: "quranfreeapps",
-  storageBucket: "quranfreeapps.firebasestorage.app",
-  messagingSenderId: "421704127278",
-  appId: "1:421704127278:web:79e948fb9f7914951920bf",
-  measurementId: "G-094TKJ49YH"
+  apiKey: "AIzaSyCZXiL61tFvvjLD8PyWppskbvC2H9pI32w",
+  authDomain: "quranbangla2.firebaseapp.com",
+  projectId: "quranbangla2",
+  storageBucket: "quranbangla2.firebasestorage.app",
+  messagingSenderId: "562329456797",
+  appId: "1:562329456797:web:6f13a79c3b4b693a7b0474",
+  measurementId: "G-C65WWC3WQQ"
 };

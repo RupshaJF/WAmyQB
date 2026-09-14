@@ -399,6 +399,7 @@ function renderReader({header, showBismillah, surahInfo, surahBenefits, ayahs}){
           <button class="play-toggle" data-key="${key}"><i class="fa-solid fa-play"></i> শুনুন</button>
           <button class="${isBookmarked?'bookmarked':''}" onclick="toggleBookmark('${key}', this)">${isBookmarked?'★ সংরক্ষিত':'☆ সংরক্ষণ'}</button>
           <button class="note-toggle-btn${noteText?' has-note':''}" data-note-key="${key}">${noteText?'📝 নোট দেখুন':'🖊 নোট লিখুন'}</button>
+          <button class="ai-tafsir-ayah-btn" data-key="${key}">✨ AI তাফসীর</button>
         </div>
         <div class="note-preview-wrap" data-note-wrap="${key}">
           ${noteText ? `<div class="note-preview" data-note-preview="${key}">${escapeHtml(noteText)}</div>` : ''}
@@ -431,6 +432,15 @@ function renderReader({header, showBismillah, surahInfo, surahBenefits, ayahs}){
   });
   document.querySelectorAll('.note-toggle-btn').forEach(btn => {
     btn.onclick = () => openNoteEditor(btn.getAttribute('data-note-key'));
+  });
+  document.querySelectorAll('.ai-tafsir-ayah-btn').forEach(btn => {
+    btn.onclick = () => {
+      const k = btn.getAttribute('data-key');
+      const a = ayahs.find(x => `${x.surah}:${x.numberInSurah}` === k);
+      if(!a || typeof openAiTafsirModal !== 'function') return;
+      const tr = (a.translations && a.translations[0]) ? a.translations[0].text : '';
+      openAiTafsirModal({ surahBn: header.bnName, ayahNum: a.numberInSurah, arabic: a.arabic, translation: tr });
+    };
   });
   syncPlayingUI();
   initAyahReadTracking();

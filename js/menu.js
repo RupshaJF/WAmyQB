@@ -22,7 +22,7 @@ function closeModal(id){
 }
 function modalEscHandler(e){
   if(e.key === 'Escape'){
-    ['settingsModal','prayerModal','qiblaModal','dictionaryModal','helpModal','taraweehModal','langPickerModal','themePickerModal','compareTrModal','surahInfoModal','downloadManagerModal','themeBuilderModal','translationHelpModal'].forEach(id => {
+    ['settingsModal','prayerModal','qiblaModal','dictionaryModal','helpModal','taraweehModal','langPickerModal','themePickerModal','compareTrModal','surahInfoModal','downloadManagerModal','themeBuilderModal','translationHelpModal','aiTafsirModal'].forEach(id => {
       const el = document.getElementById(id);
       if(el && el.style.display === 'flex') closeModal(id);
     });
