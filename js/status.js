@@ -847,29 +847,101 @@ function handleStatusImagePick(file){
   }).catch(() => showToast('ছবি লোড করা যায়নি'));
 }
 
+// ফোনে তোলা ছবির raw পিক্সেল ডেটা প্রায়ই আসলে কাত/উল্টো থাকে — ক্যামেরা সেন্সর
+// যেভাবে ধরা হয়েছিল সেটাই EXIF-এর একটা orientation ট্যাগে (মান ১-৮) লিখে রাখে,
+// আর ডিসপ্লে-সফটওয়্যারকে বলে দেয় কীভাবে ঘুরিয়ে দেখাতে হবে। canvas দিয়ে সরাসরি
+// drawImage করলে এই ট্যাগ উপেক্ষা হয়ে যায় — তাই এই ফাংশনটা JPEG-এর হেডার থেকে
+// সরাসরি (কোনো লাইব্রেরি ছাড়াই) orientation বের করে। কিছু না পেলে/সমস্যা হলে
+// নিরাপদভাবে ১ (স্বাভাবিক) রিটার্ন করে — কখনো এরর থ্রো করে না।
+function readExifOrientation(arrayBuffer){
+  try{
+    const view = new DataView(arrayBuffer);
+    if(view.byteLength < 4 || view.getUint16(0, false) !== 0xFFD8) return 1; // JPEG নয়
+    let offset = 2;
+    while(offset + 2 <= view.byteLength){
+      const marker = view.getUint16(offset, false);
+      offset += 2;
+      if(marker === 0xFFE1){ // APP1 — EXIF সাধারণত এখানেই থাকে
+        const segLen = view.getUint16(offset, false);
+        if(view.getUint32(offset + 2, false) === 0x45786966 && view.getUint16(offset + 6, false) === 0x0000){
+          const tiffStart = offset + 8;
+          const little = view.getUint16(tiffStart, false) === 0x4949; // 'II' বাইট-অর্ডার
+          const dirStart = tiffStart + view.getUint32(tiffStart + 4, little);
+          const entries = view.getUint16(dirStart, little);
+          for(let i = 0; i < entries; i++){
+            const entryOffset = dirStart + 2 + i * 12;
+            if(view.getUint16(entryOffset, little) === 0x0112){ // Orientation ট্যাগ
+              return view.getUint16(entryOffset + 8, little) || 1;
+            }
+          }
+        }
+        offset += segLen;
+      } else if(marker >= 0xFFD0 && marker <= 0xFFD9){
+        continue; // এই মার্কারগুলোর নিজের কোনো length ফিল্ড নেই
+      } else if((marker & 0xFF00) !== 0xFF00 || marker === 0xFFDA){
+        break; // অচেনা বাইট বা স্ক্যান-ডেটা শুরু — এর আগে EXIF না পেলে আর নেই
+      } else {
+        offset += view.getUint16(offset, false);
+      }
+    }
+  }catch(e){ /* কোনো পার্সিং সমস্যা হলে চুপচাপ "স্বাভাবিক" ধরে নেওয়া — কখনো ভাঙবে না */ }
+  return 1;
+}
+
+// orientation (১-৮, EXIF স্ট্যান্ডার্ড) অনুযায়ী canvas-এ সঠিক rotate/flip
+// ম্যাট্রিক্স বসায়, যাতে পরের drawImage() কল রॉ পিক্সেল ডেটা দিয়েই সঠিক
+// দিকে আঁকে। rawW/rawH মানে ছবির আসল (ঘোরানোর আগের, decode করা) width/height।
+function applyExifTransform(ctx, orientation, rawW, rawH){
+  switch(orientation){
+    case 2: ctx.transform(-1, 0, 0, 1, rawW, 0); break;          // আনুভূমিক ফ্লিপ
+    case 3: ctx.transform(-1, 0, 0, -1, rawW, rawH); break;      // ১৮০°
+    case 4: ctx.transform(1, 0, 0, -1, 0, rawH); break;          // উলম্ব ফ্লিপ
+    case 5: ctx.transform(0, 1, 1, 0, 0, 0); break;              // ট্রান্সপোজ
+    case 6: ctx.transform(0, 1, -1, 0, rawH, 0); break;          // ৯০° ঘড়ির কাঁটার দিকে
+    case 7: ctx.transform(0, -1, -1, 0, rawH, rawW); break;      // ট্রান্সভার্স
+    case 8: ctx.transform(0, -1, 1, 0, 0, rawW); break;          // ৯০° উল্টো দিকে
+    default: break; // ১ = স্বাভাবিক, কোনো ট্রান্সফর্ম লাগবে না
+  }
+}
+
 function compressImageFile(file, maxDim, quality){
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error || new Error('read-failed'));
     reader.onload = () => {
+      const buffer = reader.result;
+      const orientation = readExifOrientation(buffer);
+      // base64 data URL-এর বদলে object URL — ~33% ছোট ট্রান্সফার আর দ্রুত ডিকোড,
+      // কাজ শেষে finally ব্লকে ঠিকমতো revoke করে মেমোরি ফাঁকা করা হয়।
+      const blobUrl = URL.createObjectURL(new Blob([buffer], { type: file.type || 'image/jpeg' }));
       const img = new Image();
-      img.onerror = () => reject(new Error('image-decode-failed'));
+      img.onerror = () => { URL.revokeObjectURL(blobUrl); reject(new Error('image-decode-failed')); };
       img.onload = () => {
-        let width = img.naturalWidth, height = img.naturalHeight;
-        if(width > maxDim || height > maxDim){
-          if(width >= height){ height = Math.round(height * (maxDim / width)); width = maxDim; }
-          else { width = Math.round(width * (maxDim / height)); height = maxDim; }
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width; canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, width, height);
-        try{ resolve(canvas.toDataURL('image/jpeg', quality)); }
-        catch(e){ reject(e); }
+        try{
+          const rawW = img.naturalWidth, rawH = img.naturalHeight;
+          const swapped = orientation >= 5 && orientation <= 8; // এই চারটায় ৯০°-ঘরানার ঘোরা, width/height অদলবদল হয়
+          const dispW = swapped ? rawH : rawW;
+          const dispH = swapped ? rawW : rawH;
+
+          let outW = dispW, outH = dispH;
+          if(dispW > maxDim || dispH > maxDim){
+            if(dispW >= dispH){ outH = Math.round(dispH * (maxDim / dispW)); outW = maxDim; }
+            else { outW = Math.round(dispW * (maxDim / dispH)); outH = maxDim; }
+          }
+
+          const canvas = document.createElement('canvas');
+          canvas.width = outW; canvas.height = outH;
+          const ctx = canvas.getContext('2d');
+          ctx.scale(outW / dispW, outH / dispH); // চূড়ান্ত মাপে ছোট করা
+          applyExifTransform(ctx, orientation, rawW, rawH); // এর আগেই সঠিক দিকে ঘোরানো
+          ctx.drawImage(img, 0, 0, rawW, rawH);
+          resolve(canvas.toDataURL('image/jpeg', quality));
+        }catch(e){ reject(e); }
+        finally{ URL.revokeObjectURL(blobUrl); }
       };
-      img.src = reader.result;
+      img.src = blobUrl;
     };
-    reader.readAsDataURL(file);
+    reader.readAsArrayBuffer(file);
   });
 }
 

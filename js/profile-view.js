@@ -298,7 +298,7 @@ function profileContentHtml(user){
             <i class="fa-solid fa-chevron-down profile-avatar-toggle-icon" id="avatarToggleIcon"></i>
           </button>
           <div class="profile-avatar-grid" id="avatarGridWrap">
-            <label class="profile-avatar-tile profile-avatar-photo-tile" id="avatarPhotoTile" aria-label="${tr('profile_avatar_upload_photo')}">
+            <label class="profile-avatar-tile profile-avatar-photo-tile${user.photoData?' active has-photo':''}" id="avatarPhotoTile" aria-label="${tr('profile_avatar_upload_photo')}" style="${user.photoData ? `background-image:url('${user.photoData}');` : ''}">
               <i class="fa-solid fa-camera"></i>
               <input type="file" accept="image/*" id="profilePhotoInput" style="display:none;">
             </label>
@@ -424,6 +424,30 @@ function profileContentHtml(user){
     </div>`;
 }
 
+// প্রোফাইল ছবি Firestore-এর একটা ডকুমেন্ট-ফিল্ডে (base64 data URL হিসেবে) সেভ
+// হয়, আর একটা Firestore ডকুমেন্টের মোট সাইজ-সীমা ~1MB — তাই সাধারণ কম্প্রেসের
+// (480px/86%) পরও কোনো খুব ডিটেইলড/জটিল ছবি বড় থেকে গেলে, ধাপে ধাপে আরও ছোট
+// করে দেখা হয়, যতক্ষণ না নিরাপদ সাইজে আসে। compressImageFile() (js/status.js)
+// অপরিবর্তিত রেখে এটা তার উপরে একটা পাতলা wrapper — শুধু প্রোফাইল ছবির জন্যই
+// এই অতিরিক্ত নিরাপত্তা প্রয়োজন (স্ট্যাটাস/স্টোরির ছবি IndexedDB-তে যায়, এই
+// সীমার আওতায় পড়ে না)।
+async function compressProfilePhoto(file){
+  const ATTEMPTS = [
+    { maxDim: 480, quality: 0.86 },
+    { maxDim: 400, quality: 0.75 },
+    { maxDim: 320, quality: 0.7 },
+    { maxDim: 256, quality: 0.6 }
+  ];
+  const MAX_BYTES = 700 * 1024; // Firestore ডকুমেন্টে বাকি সব ফিল্ডের জন্য যথেষ্ট জায়গা রেখে
+  let last = null;
+  for(const { maxDim, quality } of ATTEMPTS){
+    last = await compressImageFile(file, maxDim, quality);
+    const approxBytes = (last.length - last.indexOf(',') - 1) * 0.75; // base64 → বাইট আনুমানিক হিসাব
+    if(approxBytes <= MAX_BYTES) return last;
+  }
+  return last; // সব চেষ্টার পরও বড় থাকলে, সবচেয়ে ছোট ভার্সনটাই ফেরত
+}
+
 function wireProfileContent(user){
   const root = document.getElementById('profileViewContainer');
   if(!root) return;
@@ -480,21 +504,36 @@ function wireProfileContent(user){
   let pickedIcon = avatarIcon;
   let pickedPhotoData = user.photoData || null;
 
-  const updatePreview = () => {
+  const photoTile = document.getElementById('avatarPhotoTile');
+  const photoInput = document.getElementById('profilePhotoInput');
+  const photoRemoveRow = document.getElementById('profilePhotoRemoveRow');
+
+  // src দিয়ে হিরো অ্যাভাটার + এভাটার-গ্রিডের ফটো-টাইল, দুই জায়গাতেই একসাথে
+  // ছবিটা বসায় — যেখানেই তাকান, ঠিক যে ছবিটা বেছেছেন সেটাই দেখা যায়।
+  const setPreviewImage = (src) => {
     const preview = document.getElementById('profileAvatarPreview');
-    if(!preview) return;
-    if(pickedPhotoData){
-      preview.style.backgroundImage = `url('${pickedPhotoData}')`;
+    if(preview){
+      preview.style.backgroundImage = `url('${src}')`;
       preview.style.backgroundSize = 'cover';
       preview.style.backgroundPosition = 'center';
       preview.style.background = '';
       preview.innerHTML = '';
+    }
+    if(photoTile){ photoTile.style.backgroundImage = `url('${src}')`; photoTile.classList.add('has-photo'); }
+  };
+
+  const updatePreview = () => {
+    const preview = document.getElementById('profileAvatarPreview');
+    if(!preview) return;
+    if(pickedPhotoData){
+      setPreviewImage(pickedPhotoData);
     } else {
       preview.style.backgroundImage = '';
       preview.style.background = pickedColor;
       preview.innerHTML = pickedIcon
         ? `<i class="fa-solid fa-${pickedIcon}"></i>`
         : escapeHtml((user.name || user.email || '?').trim().charAt(0).toUpperCase());
+      if(photoTile){ photoTile.style.backgroundImage = ''; photoTile.classList.remove('has-photo'); }
     }
   };
 
@@ -506,9 +545,6 @@ function wireProfileContent(user){
     preview.classList.add('avatar-pop');
   };
 
-  const photoTile = document.getElementById('avatarPhotoTile');
-  const photoInput = document.getElementById('profilePhotoInput');
-  const photoRemoveRow = document.getElementById('profilePhotoRemoveRow');
   const setTileActiveStates = (activeBtn) => {
     root.querySelectorAll('.profile-avatar-tile').forEach(b => b.classList.toggle('active', b === activeBtn));
     root.querySelectorAll('.profile-color-dot').forEach(b => b.classList.remove('active'));
@@ -516,33 +552,46 @@ function wireProfileContent(user){
   const clearPhoto = () => {
     pickedPhotoData = null;
     if(photoRemoveRow) photoRemoveRow.style.display = 'none';
-    if(photoTile) photoTile.classList.remove('active');
+    if(photoTile){ photoTile.classList.remove('active', 'has-photo'); photoTile.style.backgroundImage = ''; }
   };
 
   if(photoInput){
+    // কম্প্রেস শেষ হওয়ার আগেই বাছাই করা ছবিটা তাৎক্ষণিকভাবে দেখানোর জন্য
+    // অস্থায়ী object URL — চূড়ান্ত কম্প্রেসড ভার্সন বসানোর সাথে সাথেই নিচে
+    // revoke করে মেমোরি ফাঁকা করে দেওয়া হয়।
+    let tempPreviewUrl = null;
+    const releaseTempPreview = () => { if(tempPreviewUrl){ URL.revokeObjectURL(tempPreviewUrl); tempPreviewUrl = null; } };
+
     photoInput.addEventListener('change', async (e) => {
       const file = e.target.files && e.target.files[0];
       e.target.value = '';
       if(!file) return;
+      if(!file.type || file.type.indexOf('image/') !== 0){ showToast('একটি ছবি বাছুন'); return; }
+      if(file.size > 25 * 1024 * 1024){ showToast('ছবিটি অনেক বড়, একটু ছোট ছবি বাছুন'); return; }
+
+      releaseTempPreview();
+      tempPreviewUrl = URL.createObjectURL(file);
+      pickedIcon = '';
+      setPreviewImage(tempPreviewUrl); // ধাপ ১: তাৎক্ষণিক প্রিভিউ, কম্প্রেস শেষ হওয়ার আগেই
       if(photoTile) photoTile.classList.add('loading');
       try{
-        // Square-ish, decent-quality compress — same helper the status
-        // composer uses for photo slides. The hero avatar is a circle, so
-        // CSS background-size:cover already center-crops it correctly
-        // whatever the source aspect ratio is; no manual crop step needed.
-        const dataUrl = await compressImageFile(file, 480, 0.86);
+        // EXIF অনুযায়ী সঠিক দিকে ঘোরানো + Firestore-এ নির্বিঘ্নে সেভ হওয়ার
+        // মতো ছোট সাইজ — দুটোই নিশ্চিত করে (js/status.js + উপরের wrapper)।
+        const dataUrl = await compressProfilePhoto(file);
         pickedPhotoData = dataUrl;
-        pickedIcon = '';
         setTileActiveStates(photoTile);
         if(photoTile) photoTile.classList.add('active');
         if(photoRemoveRow) photoRemoveRow.style.display = 'flex';
-        updatePreview();
+        setPreviewImage(dataUrl); // ধাপ ২: চূড়ান্ত কম্প্রেসড ভার্সনে বদলে ফেলা — এটাই সেভ হবে
         bouncePreview();
       }catch(err){
         console.warn('profile photo compress failed:', err);
         showToast('ছবি প্রসেস করা যায়নি');
+        pickedPhotoData = user.photoData || null; // ব্যর্থ হলে আগের অবস্থাতেই ফিরিয়ে নেওয়া
+        updatePreview();
       }finally{
         if(photoTile) photoTile.classList.remove('loading');
+        releaseTempPreview();
       }
     });
   }

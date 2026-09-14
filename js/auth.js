@@ -382,6 +382,7 @@ async function onSignedIn(fbUser){
     position: '',        // পদবি — pulled from Firestore below, editable via the profile modal
     avatarColor: '',     // custom avatar color, editable via the profile modal
     avatarIcon: '',       // preset picture-avatar, editable via the profile modal (empty = use initials)
+    photoData: null,      // uploaded profile photo (data URL) — pulled from Firestore below
     phone: '',           // ফোন নম্বর — pulled from Firestore below, editable via the profile modal
     district: '',        // ঠিকানা/এলাকা — pulled from Firestore below, editable via the profile modal
     birthDate: '',        // জন্ম তারিখ — pulled from Firestore below, editable via the profile modal
@@ -402,6 +403,10 @@ async function onSignedIn(fbUser){
       if(cloud.position){ state.user.position = cloud.position; }
       if(cloud.avatarColor){ state.user.avatarColor = cloud.avatarColor; }
       if(cloud.avatarIcon){ state.user.avatarIcon = cloud.avatarIcon; }
+      // এটাই আসল বাগ ছিল — ছবি Firestore-এ ঠিকমতো সেভ হতো, কিন্তু রিফ্রেশের
+      // সময় state.user নতুন করে বানানোর সময় এই লাইনটা ছিল না, তাই cloud.photoData
+      // থাকলেও কখনো state.user-এ ফিরে আসত না এবং প্রোফাইল ছবি "উধাও" দেখাত।
+      if(cloud.photoData){ state.user.photoData = cloud.photoData; }
       if(cloud.phone){ state.user.phone = cloud.phone; }
       if(cloud.district){ state.user.district = cloud.district; }
       if(cloud.birthDate){ state.user.birthDate = cloud.birthDate; }
