@@ -283,12 +283,14 @@ function openAllBadgesModal(){
 function renderAccountArea(){
   const user = state.user;
   if(user){
-    const avatarStyle = user.avatarColor ? ` style="background:${user.avatarColor}"` : '';
+    const avatarStyle = user.photoData
+      ? ` style="background-image:url('${user.photoData}');background-size:cover;background-position:center;"`
+      : (user.avatarColor ? ` style="background:${user.avatarColor}"` : '');
     return `
       <div class="stats-card account-strip">
         <button type="button" class="account-strip-clickable" id="statsAccountStripInfo">
           <div class="account-avatar-ring">
-            <div class="account-avatar"${avatarStyle}>${avatarGlyph(user)}</div>
+            <div class="account-avatar"${avatarStyle}>${user.photoData ? '' : avatarGlyph(user)}</div>
           </div>
           <div class="account-info">
             <div class="account-name">${escapeHtml(user.name || tr('profile_default_user'))}</div>

@@ -262,7 +262,8 @@ function profileContentHtml(user){
       <div class="profile-hero">
         <div class="profile-hero-cover"></div>
         <div class="profile-hero-avatar-wrap">
-          <div class="profile-avatar-lg profile-hero-avatar" id="profileAvatarPreview" style="background:${avatarColor}">${avatarGlyph(user)}</div>
+          <div class="profile-avatar-lg profile-hero-avatar" id="profileAvatarPreview" style="${user.photoData ? `background-image:url('${user.photoData}');background-size:cover;background-position:center;` : `background:${avatarColor}`}">${user.photoData ? '' : avatarGlyph(user)}</div>
+          <button type="button" class="profile-hero-camera-badge" id="profileHeroCameraBadge" aria-label="${tr('profile_avatar_choose')}"><i class="fa-solid fa-camera"></i></button>
         </div>
         <div class="profile-hero-name" id="viewHeroName">${escapeHtml(user.name||'')}</div>
         <div class="profile-hero-position" id="viewHeroPosition"${user.position ? '' : ' style="display:none"'}>${escapeHtml(user.position||'')}</div>
@@ -282,6 +283,9 @@ function profileContentHtml(user){
         ${(!hasBio && !filledChips.length) ? `<p class="profile-empty-hint" id="viewEmptyHint">${tr('profile_empty_hint')}</p>` : ''}
       </div>
 
+      <!-- ---- Highlights: permanently-saved status items (js/status-highlights.js) ---- -->
+      <div id="statusHighlightsRow" class="profile-highlights-row"></div>
+
       <button type="button" class="settings-btn profile-action-btn profile-edit-toggle-btn" id="profEditToggleBtn">
         <i class="fa-solid fa-pen-to-square"></i><span>${tr('profile_edit')}</span>
       </button>
@@ -294,13 +298,20 @@ function profileContentHtml(user){
             <i class="fa-solid fa-chevron-down profile-avatar-toggle-icon" id="avatarToggleIcon"></i>
           </button>
           <div class="profile-avatar-grid" id="avatarGridWrap">
-            <button type="button" class="profile-avatar-tile none-tile${avatarIcon?'':' active'}" data-icon="" data-color="" aria-label="${tr('profile_avatar_use_initial')}">Aa</button>
-            ${PROFILE_AVATARS.map(a => `<button type="button" class="profile-avatar-tile${a.icon===avatarIcon?' active':''}" data-icon="${a.icon}" data-color="${a.color}" style="background:${a.color}" aria-label="avatar"><i class="fa-solid fa-${a.icon}"></i></button>`).join('')}
+            <label class="profile-avatar-tile profile-avatar-photo-tile" id="avatarPhotoTile" aria-label="${tr('profile_avatar_upload_photo')}">
+              <i class="fa-solid fa-camera"></i>
+              <input type="file" accept="image/*" id="profilePhotoInput" style="display:none;">
+            </label>
+            <button type="button" class="profile-avatar-tile none-tile${(avatarIcon || user.photoData)?'':' active'}" data-icon="" data-color="" aria-label="${tr('profile_avatar_use_initial')}">Aa</button>
+            ${PROFILE_AVATARS.map(a => `<button type="button" class="profile-avatar-tile${(a.icon===avatarIcon && !user.photoData)?' active':''}" data-icon="${a.icon}" data-color="${a.color}" style="background:${a.color}" aria-label="avatar"><i class="fa-solid fa-${a.icon}"></i></button>`).join('')}
+          </div>
+          <div class="profile-photo-remove-row" id="profilePhotoRemoveRow" style="${user.photoData ? '' : 'display:none;'}">
+            <button type="button" id="profilePhotoRemoveBtn"><i class="fa-solid fa-trash"></i> ${tr('profile_avatar_remove_photo')}</button>
           </div>
 
           <div class="profile-field-label" style="margin-top:4px;">${tr('profile_initial_color')}</div>
           <div class="profile-color-swatches">
-            ${PROFILE_AVATAR_COLORS.map(c => `<button type="button" class="profile-color-dot${c===avatarColor && !avatarIcon?' active':''}" data-color="${c}" style="background:${c}" aria-label="avatar color"></button>`).join('')}
+            ${PROFILE_AVATAR_COLORS.map(c => `<button type="button" class="profile-color-dot${(c===avatarColor && !avatarIcon && !user.photoData)?' active':''}" data-color="${c}" style="background:${c}" aria-label="avatar color"></button>`).join('')}
           </div>
         </div>
 
@@ -342,14 +353,17 @@ function profileContentHtml(user){
       <div class="section-title-sm">${tr('profile_stats_title')}</div>
       <div class="profile-stats-grid">
         <div class="profile-stat-box">
+          <div class="profile-stat-icon"><i class="fa-solid fa-award"></i></div>
           <div class="profile-stat-val"><span id="statBadges">${localNum(0)}</span>/${localNum(badgeTotal)}</div>
           <div class="profile-stat-lbl">${tr('profile_stat_badges')}</div>
         </div>
         <div class="profile-stat-box">
+          <div class="profile-stat-icon"><i class="fa-solid fa-fire"></i></div>
           <div class="profile-stat-val"><span id="statStreak">${localNum(0)}</span></div>
           <div class="profile-stat-lbl">${tr('profile_stat_streak')}</div>
         </div>
         <div class="profile-stat-box">
+          <div class="profile-stat-icon"><i class="fa-solid fa-book-quran"></i></div>
           <div class="profile-stat-val"><span id="statAyah">${localNum(0)}</span></div>
           <div class="profile-stat-lbl">${tr('profile_stat_ayah')}</div>
         </div>
@@ -464,14 +478,24 @@ function wireProfileContent(user){
 
   let pickedColor = avatarColor;
   let pickedIcon = avatarIcon;
+  let pickedPhotoData = user.photoData || null;
 
   const updatePreview = () => {
     const preview = document.getElementById('profileAvatarPreview');
     if(!preview) return;
-    preview.style.background = pickedColor;
-    preview.innerHTML = pickedIcon
-      ? `<i class="fa-solid fa-${pickedIcon}"></i>`
-      : escapeHtml((user.name || user.email || '?').trim().charAt(0).toUpperCase());
+    if(pickedPhotoData){
+      preview.style.backgroundImage = `url('${pickedPhotoData}')`;
+      preview.style.backgroundSize = 'cover';
+      preview.style.backgroundPosition = 'center';
+      preview.style.background = '';
+      preview.innerHTML = '';
+    } else {
+      preview.style.backgroundImage = '';
+      preview.style.background = pickedColor;
+      preview.innerHTML = pickedIcon
+        ? `<i class="fa-solid fa-${pickedIcon}"></i>`
+        : escapeHtml((user.name || user.email || '?').trim().charAt(0).toUpperCase());
+    }
   };
 
   const bouncePreview = () => {
@@ -482,10 +506,73 @@ function wireProfileContent(user){
     preview.classList.add('avatar-pop');
   };
 
+  const photoTile = document.getElementById('avatarPhotoTile');
+  const photoInput = document.getElementById('profilePhotoInput');
+  const photoRemoveRow = document.getElementById('profilePhotoRemoveRow');
+  const setTileActiveStates = (activeBtn) => {
+    root.querySelectorAll('.profile-avatar-tile').forEach(b => b.classList.toggle('active', b === activeBtn));
+    root.querySelectorAll('.profile-color-dot').forEach(b => b.classList.remove('active'));
+  };
+  const clearPhoto = () => {
+    pickedPhotoData = null;
+    if(photoRemoveRow) photoRemoveRow.style.display = 'none';
+    if(photoTile) photoTile.classList.remove('active');
+  };
+
+  if(photoInput){
+    photoInput.addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if(!file) return;
+      if(photoTile) photoTile.classList.add('loading');
+      try{
+        // Square-ish, decent-quality compress — same helper the status
+        // composer uses for photo slides. The hero avatar is a circle, so
+        // CSS background-size:cover already center-crops it correctly
+        // whatever the source aspect ratio is; no manual crop step needed.
+        const dataUrl = await compressImageFile(file, 480, 0.86);
+        pickedPhotoData = dataUrl;
+        pickedIcon = '';
+        setTileActiveStates(photoTile);
+        if(photoTile) photoTile.classList.add('active');
+        if(photoRemoveRow) photoRemoveRow.style.display = 'flex';
+        updatePreview();
+        bouncePreview();
+      }catch(err){
+        console.warn('profile photo compress failed:', err);
+        showToast('ছবি প্রসেস করা যায়নি');
+      }finally{
+        if(photoTile) photoTile.classList.remove('loading');
+      }
+    });
+  }
+  if(document.getElementById('profilePhotoRemoveBtn')){
+    document.getElementById('profilePhotoRemoveBtn').onclick = () => {
+      clearPhoto();
+      // Falls back to whatever icon/colour was picked before the photo —
+      // still the user's own real name-initial style, not a jarring reset.
+      const noneTile = root.querySelector('.profile-avatar-tile.none-tile');
+      setTileActiveStates(pickedIcon ? root.querySelector(`.profile-avatar-tile[data-icon="${pickedIcon}"]`) : noneTile);
+      updatePreview();
+      bouncePreview();
+    };
+  }
+
+  const cameraBadge = document.getElementById('profileHeroCameraBadge');
+  if(cameraBadge){
+    cameraBadge.onclick = (e) => {
+      e.stopPropagation();
+      setEditMode(true);
+      setAvatarGridOpen(true);
+      if(photoInput) photoInput.click();
+    };
+  }
+
   root.querySelectorAll('.profile-color-dot').forEach(btn => {
     btn.onclick = () => {
       pickedColor = btn.getAttribute('data-color');
       pickedIcon = '';
+      clearPhoto();
       root.querySelectorAll('.profile-color-dot').forEach(b => b.classList.toggle('active', b === btn));
       root.querySelectorAll('.profile-avatar-tile').forEach(b => b.classList.toggle('active', b.classList.contains('none-tile')));
       updatePreview();
@@ -493,11 +580,15 @@ function wireProfileContent(user){
     };
   });
 
+  // The photo tile is excluded here — it's wired above via its own file
+  // input change handler, not this generic icon/initial picker.
   root.querySelectorAll('.profile-avatar-tile').forEach(btn => {
+    if(btn === photoTile) return;
     btn.onclick = () => {
       pickedIcon = btn.getAttribute('data-icon') || '';
       const color = btn.getAttribute('data-color');
       if(color) pickedColor = color;
+      clearPhoto();
       root.querySelectorAll('.profile-avatar-tile').forEach(b => b.classList.toggle('active', b === btn));
       if(pickedIcon){
         root.querySelectorAll('.profile-color-dot').forEach(b => b.classList.remove('active'));
@@ -553,7 +644,7 @@ function wireProfileContent(user){
     const label = document.getElementById('profSaveBtnLabel');
     btn.disabled = true; label.textContent = tr('profile_saving');
     try{
-      await saveProfileChanges({ name, position, avatarColor: pickedColor, avatarIcon: pickedIcon, phone, district, birthDate, bio, favoriteQari, favoriteSurah });
+      await saveProfileChanges({ name, position, avatarColor: pickedColor, avatarIcon: pickedIcon, photoData: pickedPhotoData, phone, district, birthDate, bio, favoriteQari, favoriteSurah });
       // Success micro-interaction: swap the button to a checkmark for a
       // beat, then drop back to view mode — no modal to close anymore.
       btn.classList.add('profile-save-success');
@@ -574,6 +665,8 @@ function wireProfileContent(user){
 
   const seeAllBadgesBtn = document.getElementById('profSeeAllBadges');
   if(seeAllBadgesBtn) seeAllBadgesBtn.onclick = () => { if(typeof openAllBadgesModal === 'function') openAllBadgesModal(); };
+
+  if(typeof renderStatusHighlightsRow === 'function') renderStatusHighlightsRow();
 
   const changePassBtn = document.getElementById('profChangePass');
   if(changePassBtn) changePassBtn.onclick = () => confirmPasswordChange(user);

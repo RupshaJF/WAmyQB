@@ -993,7 +993,7 @@ function confirmUnlinkProvider(providerId, onDone){
 // Persists name/position/avatarColor to Firebase Auth (displayName) + the
 // Firestore profile doc, then updates local state so the whole app reflects
 // it immediately (account strip, badges, etc.) without a reload.
-async function saveProfileChanges({ name, position, avatarColor, avatarIcon, phone, district, birthDate, bio, favoriteQari, favoriteSurah }){
+async function saveProfileChanges({ name, position, avatarColor, avatarIcon, photoData, phone, district, birthDate, bio, favoriteQari, favoriteSurah }){
   const fbUser = fbAuth.currentUser;
   if(!fbUser) throw new Error('not signed in');
   // "সীমিত" স্ট্যাটাসের অ্যাকাউন্ট নাম/পদবি/বায়ো পরিবর্তন করতে পারবে না —
@@ -1005,10 +1005,14 @@ async function saveProfileChanges({ name, position, avatarColor, avatarIcon, pho
     }
   }
   if(fbUser.displayName !== name){ await fbUser.updateProfile({ displayName: name }); }
+  // photoData: null (user removed their photo) vs undefined (untouched —
+  // caller always passes pickedPhotoData though, so this is really just
+  // null-vs-string) both need to reach Firestore as an explicit null so a
+  // previously-set photo actually clears instead of lingering forever.
   await fbDb.collection('users').doc(fbUser.uid).set({
-    name, position, avatarColor, avatarIcon, phone, district, birthDate, bio, favoriteQari, favoriteSurah
+    name, position, avatarColor, avatarIcon, photoData: photoData || null, phone, district, birthDate, bio, favoriteQari, favoriteSurah
   }, { merge: true });
-  Object.assign(state.user, { name, position, avatarColor, avatarIcon, phone, district, birthDate, bio, favoriteQari, favoriteSurah });
+  Object.assign(state.user, { name, position, avatarColor, avatarIcon, photoData: photoData || null, phone, district, birthDate, bio, favoriteQari, favoriteSurah });
   refreshCurrentView();
 }
 

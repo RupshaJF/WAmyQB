@@ -10,9 +10,11 @@
 // — owner-read/owner-write only, so this is a private shelf for now, not a
 // public profile the way Instagram's version is. Each doc carries an
 // `album` name (free text the person picks when saving, defaulting to
-// "সংরক্ষিত"); the row groups saved items by that name into one bubble per
-// album, and tapping a bubble reopens the exact same full-screen viewer
-// used for live statuses (see openStatusViewer(..., 'highlight') and the
+// "সংরক্ষিত"); the row (rendered into #statusHighlightsRow, which lives on
+// the প্রোফাইল page — see js/profile-view.js — right under the bio card,
+// Instagram-Highlights-style) groups saved items by that name into one
+// bubble per album, and tapping a bubble reopens the exact same
+// full-screen viewer used for live statuses (see openStatusViewer(..., 'highlight') and the
 // mode-aware branches in js/status.js) — same progress bars, same
 // tap-to-advance/hold-to-pause, same audio engine, just no view/react
 // tracking and "delete" here means "remove from this album" only.

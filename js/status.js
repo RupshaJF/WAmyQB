@@ -170,7 +170,6 @@ function renderStatusRow(){
       </button>`;
     const bar = document.getElementById('statusLockedBar');
     if(bar) bar.onclick = () => openAuthFlow('choice');
-    if(typeof renderStatusHighlightsRow === 'function') renderStatusHighlightsRow();
     return;
   }
 
@@ -178,7 +177,6 @@ function renderStatusRow(){
     wrap.innerHTML = `<div class="status-row" id="statusRowInner"></div>`;
   }
   renderStatusRowFromCache();
-  if(typeof renderStatusHighlightsRow === 'function') renderStatusHighlightsRow();
 
   const fresh = (Date.now() - statusRowFetchedAt) < STATUS_ROW_CACHE_MS;
   if(!fresh && !statusRowLoading && typeof fbDb !== 'undefined' && firebaseReady){
