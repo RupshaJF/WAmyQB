@@ -42,7 +42,7 @@
 //   }
 
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
+const FIREBASE_CONFIG = {
   apiKey: "AIzaSyAhUgmeBHaAVbAuQxt-Ovz6NxJacgv3SyM",
   authDomain: "tv-editor1.firebaseapp.com",
   projectId: "tv-editor1",
