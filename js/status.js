@@ -100,7 +100,8 @@ let statusComposerState = { slides: [], activeIndex: 0, sending: false };
 
 let statusViewerState = {
   open:false, groups:[], groupIndex:0, itemIndex:0,
-  timer:null, itemStartedAt:0, remainingMs:0, paused:false, currentFill:null
+  timer:null, itemStartedAt:0, remainingMs:0, paused:false, currentFill:null,
+  mode:'status' // 'status' (live, 24h feed) or 'highlight' (permanent personal album — see status-highlights.js)
 };
 
 // ---------- small generic helpers ----------
@@ -169,6 +170,7 @@ function renderStatusRow(){
       </button>`;
     const bar = document.getElementById('statusLockedBar');
     if(bar) bar.onclick = () => openAuthFlow('choice');
+    if(typeof renderStatusHighlightsRow === 'function') renderStatusHighlightsRow();
     return;
   }
 
@@ -176,6 +178,7 @@ function renderStatusRow(){
     wrap.innerHTML = `<div class="status-row" id="statusRowInner"></div>`;
   }
   renderStatusRowFromCache();
+  if(typeof renderStatusHighlightsRow === 'function') renderStatusHighlightsRow();
 
   const fresh = (Date.now() - statusRowFetchedAt) < STATUS_ROW_CACHE_MS;
   if(!fresh && !statusRowLoading && typeof fbDb !== 'undefined' && firebaseReady){
@@ -312,7 +315,13 @@ function makeBlankSlide(){
     textOverlays: [],
     activeOverlayId: null,
     overlayEditMode: null,
-    undoStack: []
+    undoStack: [],
+    // Standalone voice-status content (slide.mode === 'voice')
+    voiceData: null, voiceDuration: null, voicePeaks: null,
+    // Background music riding along on a text/image slide (WhatsApp-style,
+    // ≤ STATUS_MUSIC_MAX_MS) — independent of mode, so a text OR image
+    // slide can carry it
+    musicData: null, musicDuration: null, musicPeaks: null, musicName: null
   };
 }
 function activeSlide(){ return statusComposerState.slides[statusComposerState.activeIndex]; }
@@ -389,7 +398,17 @@ function openStatusComposer(mode){
 
   const draft = loadComposerDraft();
   if(draft && draft.slides && draft.slides.length){
-    draft.slides.forEach(s => { s.undoStack = []; s.activeOverlayId = null; s.overlayEditMode = null; s.textOverlays = s.textOverlays || []; s.crop = s.crop || { scale:1, offsetXFrac:0, offsetYFrac:0 }; });
+    draft.slides.forEach(s => {
+      s.undoStack = []; s.activeOverlayId = null; s.overlayEditMode = null; s.textOverlays = s.textOverlays || [];
+      s.crop = s.crop || { scale:1, offsetXFrac:0, offsetYFrac:0 };
+      if(s.voiceData === undefined) s.voiceData = null;
+      if(s.voiceDuration === undefined) s.voiceDuration = null;
+      if(s.voicePeaks === undefined) s.voicePeaks = null;
+      if(s.musicData === undefined) s.musicData = null;
+      if(s.musicDuration === undefined) s.musicDuration = null;
+      if(s.musicPeaks === undefined) s.musicPeaks = null;
+      if(s.musicName === undefined) s.musicName = null;
+    });
     statusComposerState = { slides: draft.slides, activeIndex: clamp(draft.activeIndex || 0, 0, draft.slides.length - 1), sending: false };
     showToast('খসড়া পুনরুদ্ধার করা হয়েছে');
   } else {
@@ -408,6 +427,8 @@ function openStatusComposer(mode){
 function closeStatusComposer(){
   if(statusComposerState.sending) return;
   finalizeActiveOverlayIfAny();
+  if(typeof closeStatusAudioSheet === 'function') closeStatusAudioSheet();
+  if(typeof statusVoicePauseAllComposerAudio === 'function') statusVoicePauseAllComposerAudio();
   saveComposerDraft();
   const ov = document.getElementById('statusComposerOverlay');
   if(ov) ov.classList.remove('open');
@@ -458,6 +479,7 @@ function renderComposerChrome(){
 function switchComposerSlide(idx){
   if(idx === statusComposerState.activeIndex) return;
   finalizeActiveOverlayIfAny();
+  if(typeof statusVoicePauseAllComposerAudio === 'function') statusVoicePauseAllComposerAudio();
   statusComposerState.activeIndex = idx;
   renderComposerStage();
 }
@@ -474,7 +496,7 @@ function addComposerSlide(){
 function handleComposerTrashTap(){
   const slides = statusComposerState.slides;
   const slide = activeSlide();
-  const hasContent = !!(slide.textValue && slide.textValue.trim()) || !!slide.imageRawDataUrl || (slide.textOverlays && slide.textOverlays.length > 0);
+  const hasContent = !!(slide.textValue && slide.textValue.trim()) || !!slide.imageRawDataUrl || !!slide.voiceData || !!slide.musicData || (slide.textOverlays && slide.textOverlays.length > 0);
   if(slides.length > 1){
     if(hasContent && !confirm('এই স্লাইডটি মুছে ফেলতে চান?')) return;
     slides.splice(statusComposerState.activeIndex, 1);
@@ -497,10 +519,13 @@ function renderComposerStage(){
   const slide = activeSlide();
   if(slide.mode === 'image' && slide.imageRawDataUrl){
     renderImageStage(stage, slide);
+  } else if(slide.mode === 'voice' && slide.voiceData){
+    renderVoiceStage(stage, slide);
   } else {
     slide.mode = 'text';
     renderTextStage(stage, slide);
   }
+  if(typeof renderComposerMusicChip === 'function') renderComposerMusicChip(stage, slide);
   renderComposerToolbar();
   renderComposerBottomPanel();
   renderComposerCounter();
@@ -515,6 +540,9 @@ function renderComposerCounter(){
     const len = (slide.textValue || '').length;
     el.textContent = `${toBn(len)}/${toBn(700)}`;
     el.classList.toggle('warn', len > 650);
+  } else if(slide.mode === 'voice' && slide.voiceData){
+    el.textContent = `🎤 ${fmtTime((slide.voiceDuration||0)/1000)}`;
+    el.classList.remove('warn');
   } else {
     el.textContent = '';
     el.classList.remove('warn');
@@ -933,8 +961,12 @@ function renderComposerToolbar(){
       <label class="status-comp-tool-btn" id="statusCompImageBtn">
         <i class="fa-solid fa-image"></i>
         <input type="file" accept="image/*" id="statusCompFileInput" style="display:none;">
-      </label>`;
+      </label>
+      <button type="button" class="status-comp-tool-btn" id="statusCompVoiceBtn" title="ভয়েস স্ট্যাটাস"><i class="fa-solid fa-microphone"></i></button>
+      <button type="button" class="status-comp-tool-btn ${slide.musicData ? 'active' : ''}" id="statusCompMusicBtn" title="মিউজিক যুক্ত করুন"><i class="fa-solid fa-music"></i></button>`;
     wireFileInput();
+    document.getElementById('statusCompVoiceBtn').onclick = () => { if(typeof openStatusVoiceSheet === 'function') openStatusVoiceSheet(); };
+    document.getElementById('statusCompMusicBtn').onclick = () => { if(typeof openStatusMusicSheet === 'function') openStatusMusicSheet(); };
     document.getElementById('statusCompFontBtn').onclick = () => {
       pushUndoSnapshot();
       slide.fontIndex = (slide.fontIndex + 1) % STATUS_FONTS.length;
@@ -969,6 +1001,10 @@ function renderComposerToolbar(){
       renderComposerToolbar();
       saveComposerDraft();
     };
+  } else if(slide.mode === 'voice'){
+    bar.innerHTML = `
+      <button type="button" class="status-comp-tool-btn" id="statusCompRerecordBtn"><i class="fa-solid fa-rotate-left"></i> আবার রেকর্ড</button>`;
+    document.getElementById('statusCompRerecordBtn').onclick = () => { if(typeof openStatusVoiceSheet === 'function') openStatusVoiceSheet(); };
   } else if(slide.activeOverlayId){
     const ov = (slide.textOverlays || []).find(o => o.id === slide.activeOverlayId);
     const alignIcon = ov && ov.align === 'left' ? 'align-left' : (ov && ov.align === 'right' ? 'align-right' : 'align-center');
@@ -1017,9 +1053,11 @@ function renderComposerToolbar(){
       <label class="status-comp-tool-btn" id="statusCompImageBtn">
         <i class="fa-solid fa-image"></i>
         <input type="file" accept="image/*" id="statusCompFileInput" style="display:none;">
-      </label>`;
+      </label>
+      <button type="button" class="status-comp-tool-btn ${slide.musicData ? 'active' : ''}" id="statusCompMusicBtn2" title="মিউজিক যুক্ত করুন"><i class="fa-solid fa-music"></i></button>`;
     wireFileInput();
     document.getElementById('statusCompAddTextBtn').onclick = addTextOverlayAction;
+    document.getElementById('statusCompMusicBtn2').onclick = () => { if(typeof openStatusMusicSheet === 'function') openStatusMusicSheet(); };
   }
 }
 function wireFileInput(){
@@ -1078,6 +1116,18 @@ function renderComposerBottomPanel(){
     panel.querySelectorAll('.status-comp-swatch-dot').forEach(btn => {
       btn.onclick = () => { applyFn(btn.dataset.v); renderComposerBottomPanel(); };
     });
+  } else if(slide.mode === 'voice'){
+    const swatchArr = STATUS_BG_SWATCHES.slice(0, 8);
+    const currentVal = slide.bg || STATUS_BG_SWATCHES[0];
+    panel.innerHTML = `<div class="status-comp-swatch-row">${swatchArr.map(v => `<button type="button" class="status-comp-swatch-dot ${v === currentVal ? 'active' : ''}" data-v="${v}" style="background:${v}"></button>`).join('')}</div>`;
+    panel.querySelectorAll('.status-comp-swatch-dot').forEach(btn => {
+      btn.onclick = () => {
+        slide.bg = btn.dataset.v;
+        const stage = document.getElementById('statusCompStage'); if(stage) stage.style.background = slide.bg;
+        renderComposerBottomPanel();
+        saveComposerDraft();
+      };
+    });
   } else if(slide.activeOverlayId){
     const ov = (slide.textOverlays || []).find(o => o.id === slide.activeOverlayId);
     panel.innerHTML = `<div class="status-comp-swatch-row">${STATUS_TEXT_COLORS.map(v => `<button type="button" class="status-comp-swatch-dot ${ov && ov.color === v ? 'active' : ''}" data-v="${v}" style="background:${v}"></button>`).join('')}</div>`;
@@ -1117,9 +1167,11 @@ function saveComposerDraft(){
       mode:s.mode, bg:s.bg, colorPanelTab:s.colorPanelTab, fontIndex:s.fontIndex, align:s.align, size:s.size,
       textColor:s.textColor, highlight:s.highlight, textValue:s.textValue,
       imageRawDataUrl:s.imageRawDataUrl, filterId:s.filterId, frameAspect:s.frameAspect, crop:s.crop,
-      textOverlays: (s.textOverlays || []).map(o => ({ ...o }))
+      textOverlays: (s.textOverlays || []).map(o => ({ ...o })),
+      voiceData:s.voiceData, voiceDuration:s.voiceDuration, voicePeaks:s.voicePeaks,
+      musicData:s.musicData, musicDuration:s.musicDuration, musicPeaks:s.musicPeaks, musicName:s.musicName
     }));
-    const hasContent = slides.some(s => (s.textValue && s.textValue.trim()) || s.imageRawDataUrl);
+    const hasContent = slides.some(s => (s.textValue && s.textValue.trim()) || s.imageRawDataUrl || s.voiceData || s.musicData);
     if(!hasContent){ clearComposerDraft(); return; }
     IDBKV.set(STATUS_DRAFT_KEY, JSON.stringify({ slides, activeIndex: statusComposerState.activeIndex }));
   }catch(e){}
@@ -1142,7 +1194,8 @@ async function submitStatus(){
   const slides = statusComposerState.slides;
   for(const s of slides){
     if(s.mode === 'image'){ if(!s.imageRawDataUrl){ showToast('একটি ছবি বাছুন'); return; } }
-    else if(!(s.textValue || '').trim()){ showToast('কিছু লিখুন'); return; }
+    else if(s.mode === 'voice'){ if(!s.voiceData){ showToast('ভয়েস রেকর্ড করুন'); return; } }
+    else if(!(s.textValue || '').trim() && !s.musicData){ showToast('কিছু লিখুন'); return; }
   }
 
   statusComposerState.sending = true;
@@ -1159,6 +1212,12 @@ async function submitStatus(){
       if(s.mode === 'image'){
         const imageData = await renderSlideToImageDataUrl(s);
         payload = { type:'image', imageData };
+        if(s.musicData) Object.assign(payload, { audioData:s.musicData, audioDuration:s.musicDuration, audioPeaks:s.musicPeaks || [], audioName:s.musicName || 'অডিও' });
+      } else if(s.mode === 'voice'){
+        payload = {
+          type:'voice', bg: s.bg || STATUS_BG_SWATCHES[0],
+          audioData: s.voiceData, audioDuration: s.voiceDuration, audioPeaks: s.voicePeaks || []
+        };
       } else {
         payload = {
           type:'text', text: (s.textValue || '').trim().slice(0, 700),
@@ -1166,6 +1225,7 @@ async function submitStatus(){
           align: s.align || 'center', size: Math.round(s.size || 26),
           textColor: s.textColor || '#ffffff', highlight: !!s.highlight
         };
+        if(s.musicData) Object.assign(payload, { audioData:s.musicData, audioDuration:s.musicDuration, audioPeaks:s.musicPeaks || [], audioName:s.musicName || 'অডিও' });
       }
       const createdAt = baseNow + i * 50;
       const doc = Object.assign({
@@ -1212,6 +1272,8 @@ function ensureStatusViewerOverlay(){
         <div class="status-view-name" id="statusViewName"></div>
         <div class="status-view-time" id="statusViewTime"></div>
       </div>
+      <button type="button" class="status-view-header-btn" id="statusViewMuteBtn" style="display:none;"><i class="fa-solid fa-volume-high"></i></button>
+      <button type="button" class="status-view-header-btn" id="statusViewHighlightBtn" style="display:none;"><i class="fa-regular fa-star"></i></button>
       <button type="button" class="status-view-header-btn" id="statusViewDeleteBtn" style="display:none;"><i class="fa-solid fa-trash"></i></button>
       <button type="button" class="status-view-header-btn" id="statusViewCloseBtn"><i class="fa-solid fa-xmark"></i></button>
     </div>
@@ -1221,6 +1283,7 @@ function ensureStatusViewerOverlay(){
       <div class="status-view-tap-zone right" id="statusViewTapRight"></div>
       <div id="statusViewItems"></div>
       <div id="statusViewHeartPopLayer"></div>
+      <audio id="statusViewAudioEl" playsinline style="display:none;"></audio>
     </div>
     <div class="status-view-footer" id="statusViewFooter" style="display:none;">
       <button type="button" class="status-view-viewers-btn" id="statusViewViewersBtn">
@@ -1236,6 +1299,8 @@ function ensureStatusViewerOverlay(){
   document.getElementById('statusViewDeleteBtn').onclick = confirmDeleteCurrentStatusItem;
   document.getElementById('statusViewViewersBtn').onclick = openStatusViewersSheet;
   document.getElementById('statusViewReactBtn').onclick = handleReactButtonTap;
+  document.getElementById('statusViewMuteBtn').onclick = () => { if(typeof toggleStatusViewerMute === 'function') toggleStatusViewerMute(); };
+  document.getElementById('statusViewHighlightBtn').onclick = () => { if(typeof openSaveToHighlightFlow === 'function') openSaveToHighlightFlow(); };
 
   attachStatusTapZone(document.getElementById('statusViewTapLeft'), goToPrevStatusItem);
   attachStatusTapZone(document.getElementById('statusViewTapRight'), goToNextStatusItem);
@@ -1319,7 +1384,7 @@ function spawnHeartPop(e){
   setTimeout(() => heart.remove(), 700);
 }
 
-function openStatusViewer(groups, groupIndex, itemIndex){
+function openStatusViewer(groups, groupIndex, itemIndex, mode){
   if(!state.user){ if(typeof openAuthFlow === 'function') openAuthFlow('choice'); return; }
   if(!groups || !groups.length) return;
   ensureStatusViewerOverlay();
@@ -1327,6 +1392,7 @@ function openStatusViewer(groups, groupIndex, itemIndex){
   statusViewerState.groups = groups;
   statusViewerState.groupIndex = groupIndex || 0;
   statusViewerState.itemIndex = itemIndex || 0;
+  statusViewerState.mode = mode === 'highlight' ? 'highlight' : 'status';
   document.getElementById('statusViewerOverlay').classList.add('open');
   document.body.style.overflow = 'hidden';
   renderStatusViewerGroup();
@@ -1350,24 +1416,37 @@ function renderStatusViewerGroup(){
   avatarEl.style.background = group.avatarColor || PROFILE_AVATAR_COLORS[0];
   avatarEl.innerHTML = avatarGlyph({ name: group.name, avatarIcon: group.avatarIcon });
   const isOwn = group.uid === state.user.uid;
-  document.getElementById('statusViewName').textContent = isOwn ? 'আমার স্ট্যাটাস' : (group.name || 'ব্যবহারকারী');
+  const isHighlight = statusViewerState.mode === 'highlight';
+  document.getElementById('statusViewName').textContent = isHighlight ? (group.name || 'হাইলাইট') : (isOwn ? 'আমার স্ট্যাটাস' : (group.name || 'ব্যবহারকারী'));
 
   document.getElementById('statusViewProgressRow').innerHTML =
     group.items.map(() => `<div class="status-view-progress-track"><div class="status-view-progress-fill"></div></div>`).join('');
 
   document.getElementById('statusViewItems').innerHTML = group.items.map((it,i) => statusViewItemHtml(it,i)).join('');
+  if(typeof statusRenderItemWaveforms === 'function') statusRenderItemWaveforms(group);
 
-  document.getElementById('statusViewDeleteBtn').style.display = isOwn ? 'flex' : 'none';
-  document.getElementById('statusViewFooter').style.display = 'flex';
+  document.getElementById('statusViewDeleteBtn').style.display = (isOwn || isHighlight) ? 'flex' : 'none';
+  document.getElementById('statusViewFooter').style.display = isHighlight ? 'none' : 'flex';
 
   showStatusViewerItem(statusViewerState.itemIndex);
 }
 
+function statusMusicChipHtml(it){
+  return it.audioData ? `<div class="status-music-chip"><i class="fa-solid fa-music"></i><span>${escapeHtml(it.audioName || 'অডিও')}</span></div>` : '';
+}
 function statusViewItemHtml(it, i){
+  if(it.type === 'voice'){
+    const bg = it.bg || STATUS_BG_SWATCHES[0];
+    return `<div class="status-view-item status-view-item-voice" data-i="${i}" style="background:${bg};">
+      <div class="status-voice-view-icon"><i class="fa-solid fa-microphone"></i></div>
+      <div class="status-voice-view-bars"></div>
+    </div>`;
+  }
   if(it.type === 'image'){
     return `<div class="status-view-item" data-i="${i}">
       <img src="${it.imageData}" alt="">
       ${it.text ? `<div class="status-view-caption">${escapeHtml(it.text)}</div>` : ''}
+      ${statusMusicChipHtml(it)}
     </div>`;
   }
   const font = STATUS_FONTS.find(f => f.id === it.font) || STATUS_FONTS[0];
@@ -1378,6 +1457,7 @@ function statusViewItemHtml(it, i){
   const textCls = 'status-view-text' + (it.highlight ? ' highlight' : '');
   return `<div class="status-view-item" data-i="${i}" style="background:${bg};">
     <div class="${textCls}" style="font-family:${font.family};font-weight:${font.weight||600};${font.upper?'text-transform:uppercase;':''}text-align:${align};color:${color};font-size:${size}px;">${escapeHtml(it.text||'')}</div>
+    ${statusMusicChipHtml(it)}
   </div>`;
 }
 
@@ -1420,9 +1500,13 @@ function showStatusViewerItem(idx){
   document.getElementById('statusViewTime').textContent = typeof timeAgoBn === 'function' ? timeAgoBn(item.createdAt) : '';
 
   const isOwn = group.uid === state.user.uid;
+  const isHighlight = statusViewerState.mode === 'highlight';
   const viewersBtn = document.getElementById('statusViewViewersBtn');
   const reactBtn = document.getElementById('statusViewReactBtn');
-  if(isOwn){
+  if(isHighlight){
+    viewersBtn.style.display = 'none';
+    reactBtn.style.display = 'none';
+  } else if(isOwn){
     viewersBtn.style.display = 'flex';
     document.getElementById('statusViewViewersCount').textContent = toBn(item.viewCount || 0);
     reactBtn.style.display = item.reactCount ? 'flex' : 'none';
@@ -1436,10 +1520,23 @@ function showStatusViewerItem(idx){
     updateReactBtnUI(item, reacted);
   }
 
-  markStatusSeenLocally(item.id);
-  if(!isOwn) recordStatusView(item);
+  const highlightBtn = document.getElementById('statusViewHighlightBtn');
+  if(highlightBtn){
+    highlightBtn.style.display = (isOwn && !isHighlight) ? 'flex' : 'none';
+    const icon = highlightBtn.querySelector('i');
+    if(icon) icon.className = (isOwn && !isHighlight && typeof isStatusHighlighted === 'function' && isStatusHighlighted(item.id)) ? 'fa-solid fa-star' : 'fa-regular fa-star';
+  }
 
-  startStatusItemTimer(idx, STATUS_ITEM_MS);
+  if(!isHighlight){
+    markStatusSeenLocally(item.id);
+    if(!isOwn) recordStatusView(item);
+  }
+
+  if(typeof statusViewerLoadItemAudio === 'function') statusViewerLoadItemAudio(item);
+  // A voice-status or music-carrying slide stays on screen for exactly as
+  // long as its clip, WhatsApp-style, instead of the usual fixed timing.
+  const durationMs = (item.audioData && item.audioDuration) ? clamp(item.audioDuration, 800, 60000) : STATUS_ITEM_MS;
+  startStatusItemTimer(idx, durationMs);
 }
 
 function startStatusItemTimer(idx, durationMs){
@@ -1471,6 +1568,7 @@ function pauseStatusItemTimer(){
   const elapsed = Date.now() - statusViewerState.itemStartedAt;
   statusViewerState.remainingMs = Math.max(200, statusViewerState.remainingMs - elapsed);
   statusViewerState.paused = true;
+  if(typeof statusViewerPauseAudio === 'function') statusViewerPauseAudio();
 }
 
 function resumeStatusItemTimer(){
@@ -1485,11 +1583,13 @@ function resumeStatusItemTimer(){
   statusViewerState.itemStartedAt = Date.now();
   clearTimeout(statusViewerState.timer);
   statusViewerState.timer = setTimeout(goToNextStatusItem, statusViewerState.remainingMs);
+  if(typeof statusViewerResumeAudio === 'function') statusViewerResumeAudio();
 }
 
 function stopStatusItemTimer(){
   clearTimeout(statusViewerState.timer);
   statusViewerState.timer = null;
+  if(typeof statusViewerStopAudio === 'function') statusViewerStopAudio();
 }
 
 function goToNextStatusItem(){ showStatusViewerItem(statusViewerState.itemIndex + 1); }
@@ -1631,6 +1731,10 @@ function confirmDeleteCurrentStatusItem(){
   if(!group || group.uid !== state.user.uid) return;
   const item = group.items[statusViewerState.itemIndex];
   if(!item) return;
+  if(statusViewerState.mode === 'highlight'){
+    if(typeof confirmRemoveFromHighlight === 'function') confirmRemoveFromHighlight(item, group);
+    return;
+  }
   pauseStatusItemTimer();
   if(!confirm('এই স্ট্যাটাসটি মুছে ফেলতে চান?')){ resumeStatusItemTimer(); return; }
   deleteStatusItem(item, group);
