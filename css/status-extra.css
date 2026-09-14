@@ -149,13 +149,20 @@
 }
 .status-voice-view-bars .status-voice-bar{background:rgba(255,255,255,.5);max-width:6px;}
 
-/* ---------- Highlights row (home tab, under the status row) ---------- */
+/* ---------- Highlights row (now lives on the প্রোফাইল page, under the bio
+   card — see js/profile-view.js — not the home tab) ---------- */
 #statusHighlightsRow:not(:empty){margin:0 0 14px;}
 .status-highlights-inner{padding-top:0;}
 .status-highlight-item .status-highlight-cover{
   width:58px;height:58px;border-radius:50%;border:2px solid var(--gold-soft);box-sizing:border-box;
 }
 .status-highlight-item .status-avatar i{font-size:18px;}
+
+/* Bleeds to the screen edges like .profile-hero does (see
+   css/profile-page.css's -16px override) so the horizontal scroll feels
+   natural instead of stopping awkwardly at the page's own side padding. */
+.profile-highlights-row:not(:empty){margin:2px -16px 18px;padding:0 16px;overflow-x:auto;}
+.profile-highlights-row .status-highlights-inner{padding-bottom:2px;}
 
 /* ---------- Highlights save sheet: album chips + new-album input ---------- */
 .status-highlight-album-row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;}

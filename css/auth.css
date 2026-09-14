@@ -160,7 +160,11 @@
 .profile-joined{font-size:12px;color:var(--ink-soft);margin:-4px 0 14px;display:flex;align-items:center;gap:6px;}
 .profile-error{color:#C0392B;font-size:12.5px;margin:-4px 0 10px;min-height:1px;}
 .profile-stats-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:18px 0 16px;}
-.profile-stat-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 6px;text-align:center;}
+.profile-stat-box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 6px 12px;text-align:center;}
+.profile-stat-icon{
+  width:30px;height:30px;border-radius:50%;background:var(--gold-soft);color:var(--gold);
+  display:flex;align-items:center;justify-content:center;font-size:13px;margin:0 auto 8px;
+}
 .profile-stat-val{font-family:'Noto Serif Bengali',serif;font-weight:700;font-size:16px;}
 .profile-stat-lbl{font-size:11px;color:var(--ink-soft);margin-top:2px;}
 .profile-meta-box{
@@ -208,13 +212,16 @@
 /* ---- Hero: gradient cover bleeding to the modal edges + overlapping avatar ---- */
 .profile-hero{position:relative;text-align:center;margin:0 -18px 4px;padding:0 18px;}
 .profile-hero-cover{
-  height:64px;margin:0 -18px;
-  background:linear-gradient(135deg,var(--teal) 0%,var(--teal-deep) 65%,var(--gold) 145%);
+  height:78px;margin:0 -18px;
+  background:
+    radial-gradient(circle at 14% 22%, rgba(255,255,255,.14) 0, rgba(255,255,255,0) 40%),
+    radial-gradient(circle at 84% 78%, rgba(255,255,255,.10) 0, rgba(255,255,255,0) 46%),
+    linear-gradient(135deg,var(--teal) 0%,var(--teal-deep) 62%,var(--gold) 150%);
   border-radius:var(--modal-radius,var(--radius)) var(--modal-radius,var(--radius)) 0 0;
 }
-.profile-hero-avatar-wrap{display:flex;justify-content:center;margin-top:-38px;position:relative;z-index:2;}
+.profile-hero-avatar-wrap{display:flex;justify-content:center;margin-top:-40px;position:relative;z-index:2;}
 .profile-hero-avatar{
-  width:84px;height:84px;font-size:32px;
+  width:88px;height:88px;font-size:32px;
   box-shadow:0 0 0 4px var(--parchment),0 8px 20px -8px rgba(0,0,0,.35);
   transition:transform .15s ease;
 }
@@ -223,6 +230,30 @@
 .profile-hero-name{font-family:'Noto Serif Bengali',serif;font-weight:700;font-size:19px;color:var(--ink);margin-top:10px;}
 .profile-hero-position{font-size:12.5px;color:var(--ink-soft);margin-top:2px;}
 .profile-hero .profile-joined{justify-content:center;margin-top:8px;}
+
+/* One-tap photo upload: small camera badge sitting on the hero avatar's
+   edge, same footprint everywhere the app uses a floating icon button. */
+.profile-hero-camera-badge{
+  position:absolute;left:50%;bottom:-2px;transform:translateX(26px);z-index:3;
+  width:30px;height:30px;border-radius:50%;background:var(--gold);color:var(--teal-deep);
+  border:3px solid var(--parchment);display:flex;align-items:center;justify-content:center;
+  font-size:12px;cursor:pointer;padding:0;
+}
+.profile-hero-camera-badge:active{background:var(--gold-soft);}
+
+/* Avatar-grid photo tile: same 38px circle as the icon tiles, dashed like
+   the "initial" tile but with a camera glyph + its own loading state. */
+.profile-avatar-photo-tile{
+  background:var(--panel);border:2px dashed var(--gold);color:var(--gold);
+  display:flex;align-items:center;justify-content:center;
+}
+.profile-avatar-photo-tile.active{border-style:solid;background:var(--gold);color:var(--teal-deep);}
+.profile-avatar-photo-tile.loading{opacity:.5;pointer-events:none;}
+.profile-photo-remove-row{display:flex;justify-content:center;margin:-2px 0 12px;}
+.profile-photo-remove-row button{
+  background:none;border:none;color:#C0392B;font-size:12px;font-weight:600;
+  display:flex;align-items:center;gap:6px;cursor:pointer;padding:6px 8px;
+}
 
 /* ---- Profile completeness bar (reuses .badges-summary-bar/-fill for the
    animated fill + gradient look already defined for the badges progress) ---- */
