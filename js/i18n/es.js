@@ -29,6 +29,8 @@ I18N.es = {
     profile_avatar_choose: 'Elegir avatar',
     profile_avatar_use_initial: 'Usar iniciales',
     profile_initial_color: 'Color de las iniciales',
+    profile_avatar_upload_photo: 'Subir foto',
+    profile_avatar_remove_photo: 'Quitar foto',
     profile_field_name: 'Nombre',
     profile_field_position: 'Cargo (opcional)',
     profile_field_position_ph: 'ej. Estudiante, Imam, etc.',

@@ -29,6 +29,8 @@ I18N.sw = {
     profile_avatar_choose: 'Chagua picha ya wasifu',
     profile_avatar_use_initial: 'Tumia herufi za mwanzo',
     profile_initial_color: 'Rangi ya herufi za mwanzo',
+    profile_avatar_upload_photo: 'Pakia picha',
+    profile_avatar_remove_photo: 'Ondoa picha',
     profile_field_name: 'Jina',
     profile_field_position: 'Wadhifa (si lazima)',
     profile_field_position_ph: 'mfano: Mwanafunzi, Imamu, n.k.',

@@ -37,6 +37,8 @@ I18N.en = {
     profile_avatar_choose: 'Choose an avatar',
     profile_avatar_use_initial: 'Use initials',
     profile_initial_color: 'Initial color',
+    profile_avatar_upload_photo: 'Upload photo',
+    profile_avatar_remove_photo: 'Remove photo',
     profile_field_name: 'Name',
     profile_field_position: 'Position (optional)',
     profile_field_position_ph: 'e.g. Student, Imam, etc.',

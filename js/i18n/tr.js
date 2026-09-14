@@ -29,6 +29,8 @@ I18N.tr = {
     profile_avatar_choose: 'Avatar seç',
     profile_avatar_use_initial: 'Baş harfleri kullan',
     profile_initial_color: 'Baş harf rengi',
+    profile_avatar_upload_photo: 'Fotoğraf yükle',
+    profile_avatar_remove_photo: 'Fotoğrafı kaldır',
     profile_field_name: 'Ad',
     profile_field_position: 'Unvan (isteğe bağlı)',
     profile_field_position_ph: 'ör. Öğrenci, İmam, vb.',

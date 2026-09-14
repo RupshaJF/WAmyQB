@@ -37,6 +37,8 @@ I18N.bn = {
     profile_avatar_choose: 'অ্যাভাটার বেছে নিন',
     profile_avatar_use_initial: 'ইনিশিয়াল ব্যবহার করুন',
     profile_initial_color: 'ইনিশিয়ালের রং',
+    profile_avatar_upload_photo: 'ছবি আপলোড করুন',
+    profile_avatar_remove_photo: 'ছবি সরান',
     profile_field_name: 'নাম',
     profile_field_position: 'পদবি (ঐচ্ছিক)',
     profile_field_position_ph: 'যেমন: শিক্ষার্থী, ইমাম, ইত্যাদি',

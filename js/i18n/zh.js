@@ -29,6 +29,8 @@ I18N.zh = {
     profile_avatar_choose: '选择头像',
     profile_avatar_use_initial: '使用首字母',
     profile_initial_color: '首字母颜色',
+    profile_avatar_upload_photo: '上传照片',
+    profile_avatar_remove_photo: '移除照片',
     profile_field_name: '姓名',
     profile_field_position: '职位（可选）',
     profile_field_position_ph: '例如：学生、伊玛目等',

@@ -29,6 +29,8 @@ I18N.ms = {
     profile_avatar_choose: 'Pilih avatar',
     profile_avatar_use_initial: 'Guna inisial',
     profile_initial_color: 'Warna inisial',
+    profile_avatar_upload_photo: 'Muat naik foto',
+    profile_avatar_remove_photo: 'Alih keluar foto',
     profile_field_name: 'Nama',
     profile_field_position: 'Jawatan (pilihan)',
     profile_field_position_ph: 'cth: Pelajar, Imam, dll.',

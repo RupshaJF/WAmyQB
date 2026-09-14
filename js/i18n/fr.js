@@ -29,6 +29,8 @@ I18N.fr = {
     profile_avatar_choose: 'Choisir un avatar',
     profile_avatar_use_initial: 'Utiliser les initiales',
     profile_initial_color: 'Couleur des initiales',
+    profile_avatar_upload_photo: 'Télécharger une photo',
+    profile_avatar_remove_photo: 'Supprimer la photo',
     profile_field_name: 'Nom',
     profile_field_position: 'Fonction (facultatif)',
     profile_field_position_ph: 'ex. Étudiant, Imam, etc.',

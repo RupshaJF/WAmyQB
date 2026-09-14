@@ -29,6 +29,8 @@ I18N.ru = {
     profile_avatar_choose: 'Выбрать аватар',
     profile_avatar_use_initial: 'Использовать инициалы',
     profile_initial_color: 'Цвет инициалов',
+    profile_avatar_upload_photo: 'Загрузить фото',
+    profile_avatar_remove_photo: 'Удалить фото',
     profile_field_name: 'Имя',
     profile_field_position: 'Должность (необязательно)',
     profile_field_position_ph: 'напр. Студент, Имам и т.д.',

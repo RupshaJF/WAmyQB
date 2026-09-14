@@ -29,6 +29,8 @@ I18N.hi = {
     profile_avatar_choose: 'अवतार चुनें',
     profile_avatar_use_initial: 'आद्याक्षर उपयोग करें',
     profile_initial_color: 'आद्याक्षर का रंग',
+    profile_avatar_upload_photo: 'फ़ोटो अपलोड करें',
+    profile_avatar_remove_photo: 'फ़ोटो हटाएं',
     profile_field_name: 'नाम',
     profile_field_position: 'पदवी (वैकल्पिक)',
     profile_field_position_ph: 'जैसे: छात्र, इमाम, आदि',

@@ -29,6 +29,8 @@ I18N.fa = {
     profile_avatar_choose: 'انتخاب آواتار',
     profile_avatar_use_initial: 'استفاده از حروف اول',
     profile_initial_color: 'رنگ حروف اول',
+    profile_avatar_upload_photo: 'بارگذاری عکس',
+    profile_avatar_remove_photo: 'حذف عکس',
     profile_field_name: 'نام',
     profile_field_position: 'سمت (اختیاری)',
     profile_field_position_ph: 'مثلاً: دانش‌آموز، امام و غیره',

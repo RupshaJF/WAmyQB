@@ -29,6 +29,8 @@ I18N.ar = {
     profile_avatar_choose: 'اختر الصورة الرمزية',
     profile_avatar_use_initial: 'استخدام الأحرف الأولى',
     profile_initial_color: 'لون الأحرف الأولى',
+    profile_avatar_upload_photo: 'رفع صورة',
+    profile_avatar_remove_photo: 'إزالة الصورة',
     profile_field_name: 'الاسم',
     profile_field_position: 'المنصب (اختياري)',
     profile_field_position_ph: 'مثال: طالب، إمام، إلخ',

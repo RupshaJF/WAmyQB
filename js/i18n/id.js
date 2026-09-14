@@ -29,6 +29,8 @@ I18N.id = {
     profile_avatar_choose: 'Pilih avatar',
     profile_avatar_use_initial: 'Gunakan inisial',
     profile_initial_color: 'Warna inisial',
+    profile_avatar_upload_photo: 'Unggah foto',
+    profile_avatar_remove_photo: 'Hapus foto',
     profile_field_name: 'Nama',
     profile_field_position: 'Jabatan (opsional)',
     profile_field_position_ph: 'contoh: Pelajar, Imam, dll.',

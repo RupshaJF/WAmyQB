@@ -29,6 +29,8 @@ I18N.ur = {
     profile_avatar_choose: 'اوتار منتخب کریں',
     profile_avatar_use_initial: 'ابتدائی حروف استعمال کریں',
     profile_initial_color: 'ابتدائی حروف کا رنگ',
+    profile_avatar_upload_photo: 'تصویر اپ لوڈ کریں',
+    profile_avatar_remove_photo: 'تصویر ہٹائیں',
     profile_field_name: 'نام',
     profile_field_position: 'عہدہ (اختیاری)',
     profile_field_position_ph: 'مثلاً: طالب علم، امام، وغیرہ',
