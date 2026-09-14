@@ -47,6 +47,7 @@
 <link rel="stylesheet" href="css/theme-builder.css">
 <link rel="stylesheet" href="css/donation.css">
 <link rel="stylesheet" href="css/hadith.css">
+<link rel="stylesheet" href="css/ai-tafsir.css">
 <link rel="stylesheet" href="css/session-security.css">
 <link rel="stylesheet" href="css/mfa.css">
 <link rel="stylesheet" href="css/profile-page.css">
@@ -296,6 +297,7 @@
   </div>
   <div class="drawer-list">
     <button class="drawer-item" id="drawerGoToAyah"><span class="di-ic"><i class="fa-solid fa-arrow-turn-up"></i></span> <span data-i18n="menu_goto_ayah">নির্দিষ্ট আয়াতে যান</span></button>
+    <button class="drawer-item" id="drawerAiTafsir"><span class="di-ic"><i class="fa-solid fa-wand-magic-sparkles"></i></span> <span>AI তাফসীর সহকারী</span></button>
     <button class="drawer-item" id="drawerPrayerTimes"><span class="di-ic"><i class="fa-solid fa-clock"></i></span> <span data-i18n="menu_prayer_times">সালাতের সময়সূচি</span></button>
     <button class="drawer-item" id="drawerQibla"><span class="di-ic"><i class="fa-solid fa-kaaba"></i></span> <span>কিবলার দিক</span></button>
     <button class="drawer-item" id="drawerTaraweeh"><span class="di-ic"><i class="fa-solid fa-moon"></i></span> <span>তারাবীহ ট্র্যাকার</span></button>
@@ -535,6 +537,27 @@
 </div>
 
 <!-- ================= Dictionary modal ================= -->
+<!-- AI তাফসীর/প্রশ্নোত্তর সহকারী — লজিক js/ai-tafsir.js, স্টাইল css/ai-tafsir.css -->
+<div class="app-modal" id="aiTafsirModal" style="display:none;">
+  <div class="app-modal-box ait-box">
+    <div class="app-modal-head">
+      <h3><i class="fa-solid fa-wand-magic-sparkles"></i> AI তাফসীর সহকারী</h3>
+      <button class="app-modal-close" id="aiTafsirClose">✕</button>
+    </div>
+    <div class="ait-ctx" id="aiTafsirHeadCtx" style="display:none;"></div>
+    <div class="ait-chat" id="aiTafsirChat"></div>
+    <div class="ait-chips" id="aiTafsirChips"></div>
+    <div class="ait-inputbar">
+      <textarea id="aiTafsirInput" rows="1" placeholder="আপনার প্রশ্ন লিখুন..."></textarea>
+      <button class="ait-send-btn" id="aiTafsirSend" type="button" aria-label="পাঠান"><i class="fa-solid fa-paper-plane"></i></button>
+    </div>
+    <div class="ait-footer">
+      <span id="aiTafsirRemaining"></span>
+      <span class="ait-disclaimer">⚠️ এটি AI-জেনারেটেড ব্যাখ্যা, ফতোয়া নয় — গুরুত্বপূর্ণ ধর্মীয় বিষয়ে যোগ্য আলেমের পরামর্শ নিন।</span>
+    </div>
+  </div>
+</div>
+
 <div class="app-modal" id="dictionaryModal" style="display:none;">
   <div class="app-modal-box">
     <div class="app-modal-head">
@@ -709,6 +732,7 @@
 
 <script src="js/player.js" defer></script>
 <script src="js/reader.js" defer></script>
+<script src="js/ai-tafsir.js" defer></script>
 <script src="js/sidebar.js" defer></script>
 <script src="js/search.js" defer></script>
 <script src="js/topics.js" defer></script>
