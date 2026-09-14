@@ -42,12 +42,12 @@
 //   }
 
 // For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyAhUgmeBHaAVbAuQxt-Ovz6NxJacgv3SyM",
-  authDomain: "tv-editor1.firebaseapp.com",
-  projectId: "tv-editor1",
-  storageBucket: "tv-editor1.firebasestorage.app",
-  messagingSenderId: "726024476390",
-  appId: "1:726024476390:web:6fae86fdce6b5c6b9e8d27",
-  measurementId: "G-GBKMHRFQZ4"
+const firebaseConfig = {
+  apiKey: "AIzaSyDba6MzA2OfawaQrdqSoP-3_ew6xldJIX4",
+  authDomain: "quranfreeapps.firebaseapp.com",
+  projectId: "quranfreeapps",
+  storageBucket: "quranfreeapps.firebasestorage.app",
+  messagingSenderId: "421704127278",
+  appId: "1:421704127278:web:79e948fb9f7914951920bf",
+  measurementId: "G-094TKJ49YH"
 };
