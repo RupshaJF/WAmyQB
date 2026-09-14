@@ -246,8 +246,11 @@
 .profile-avatar-photo-tile{
   background:var(--panel);border:2px dashed var(--gold);color:var(--gold);
   display:flex;align-items:center;justify-content:center;
+  background-size:cover;background-position:center;
 }
-.profile-avatar-photo-tile.active{border-style:solid;background:var(--gold);color:var(--teal-deep);}
+.profile-avatar-photo-tile i{transition:opacity .15s ease;}
+.profile-avatar-photo-tile.has-photo i{opacity:0;}
+.profile-avatar-photo-tile.active{border-style:solid;background-color:var(--gold);color:var(--teal-deep);}
 .profile-avatar-photo-tile.loading{opacity:.5;pointer-events:none;}
 .profile-photo-remove-row{display:flex;justify-content:center;margin:-2px 0 12px;}
 .profile-photo-remove-row button{
