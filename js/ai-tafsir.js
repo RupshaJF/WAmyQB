@@ -33,14 +33,15 @@ let aiTafsirCurrentAyah = null;  // {surahBn, ayahNum, arabic, translation} অ�
 let aiTafsirBusy = false;
 
 const AI_TAFSIR_AYAH_PROMPTS = [
-  'এই আয়াতের মূল শিক্ষা কী?',
-  'এই আয়াতটি কখন/কোন প্রেক্ষাপটে নাযিল হয়েছিল?',
-  'আজকের জীবনে এই আয়াত কীভাবে প্রয়োগ করা যায়?'
+  'আয়াতের মূল শিক্ষা কী?',
+  'আয়াতটি কোন প্রেক্ষাপটে নাযিল হয়েছিল?',
+  'আয়াতটি আমাদের কি ধরনের শিক্ষা দেয়'
 ];
 const AI_TAFSIR_GENERAL_PROMPTS = [
-  'সালাতে মনোযোগ ধরে রাখার উপায় কী?',
-  'কুরআন তেলাওয়াতের আদব কী কী?',
-  'তাওবা করার সঠিক নিয়ম কী?'
+  'সালাতে মনোযোগ ধরে রাখবো কিভাবে?',
+  'কুরআন এর মূল বিষয় বস্তু কী?',
+  'তাওবা করার সঠিক নিয়ম কী?',
+  ' কুরআন তিলাওয়াত করা কী?'
 ];
 
 const AIT_MAX_CHARS = 2000;          // api/ai-tafsir.js এর question.slice(0,2000) এর সাথে মিলিয়ে রাখা
@@ -180,7 +181,7 @@ function openAiTafsirModal(ayahCtx){
   });
 
   appendAiTafsirBubble('model', ayahCtx
-    ? 'এই আয়াত নিয়ে যা জানতে চান জিজ্ঞাসা করুন। নিচের সাজেশনগুলো থেকেও বেছে নিতে পারেন।'
+    ? 'কুরআন অ্যাপে স্বাগতম!এই আয়াত নিয়ে যা জানতে চান জিজ্ঞাসা করুন।'
     : 'ইসলাম বা কুরআন নিয়ে যেকোনো প্রশ্ন করুন। কোনো নির্দিষ্ট আয়াতের ব্যাখ্যা জানতে চাইলে রিডারে সেই আয়াতের নিচের "AI তাফসীর" বাটন থেকে জিজ্ঞাসা করলে আরও নির্ভুল উত্তর পাবেন।'
   );
 
@@ -313,11 +314,11 @@ async function sendAiTafsirQuestion(){
     if(!res.ok){
       aiTafsirHistory.pop();
       if(data.error === 'rate_limited'){
-        appendAiTafsirBubble('model', 'আজকের জন্য প্রশ্নের সীমা শেষ হয়ে গেছে 🙏 আগামীকাল আবার চেষ্টা করুন।', true);
+        appendAiTafsirBubble('model', 'দুঃখিত, তোমার লিমিট শেষ হয়ে গেছে । কালকে আবার চেষ্টা করো কেমন 😊', true);
       } else if(data.error === 'not_configured'){
-        appendAiTafsirBubble('model', 'এই ফিচারটি এখনো সেটআপ করা হয়নি। SETUP_AI_TAFSIR.txt ফাইলটি অনুসরণ করুন।', true);
+        appendAiTafsirBubble('model', 'দুঃখিত, এই ফিউচারটি এখনো উপলব্ধ করা হয়নি।', true);
       } else {
-        appendAiTafsirBubble('model', 'দুঃখিত, এখন উত্তর দিতে পারছি না। একটু পর আবার চেষ্টা করুন।', true);
+        appendAiTafsirBubble('model', 'দুঃখিত, কোথাও একটা সমস্যা হয়েছে।', true);
       }
       return;
     }
@@ -331,7 +332,7 @@ async function sendAiTafsirQuestion(){
   }catch(e){
     if(typingEl) typingEl.remove();
     aiTafsirHistory.pop();
-    appendAiTafsirBubble('model', 'ইন্টারনেট সংযোগ পরীক্ষা করুন।', true);
+    appendAiTafsirBubble('model', 'দুঃখিত, তোমার ইন্টারনেট সংযোগ পরীক্ষা করো।', true);
   }finally{
     aiTafsirBusy = false;
     if(sendBtn){ sendBtn.disabled = false; }
