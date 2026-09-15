@@ -142,11 +142,31 @@ service cloud.firestore {
       // বন্ধ করার সময় নিজের deviceId-এর ডক ডিলিট করার চেষ্টা করে — আগে এখানে
       // delete: if false ছিল বলে সেটা সবসময় নিঃশব্দে ব্যর্থ হতো এবং টগল অফ
       // করলেও সাবস্ক্রিপশন Firestore-এ থেকে যেত)।
+      // create ও update আলাদা করা হলো কেন: scripts/send-prayer-notifications.js
+      // (Admin SDK দিয়ে চলে, rules বাইপাস করে) প্রতিবার নোটিফিকেশন পাঠানোর
+      // পর lastNotifiedDate/lastNotifiedPrayers ফিল্ড merge করে ডকুমেন্টে
+      // যোগ করে দেয়। update-এ যদি পুরো resulting ডকুমেন্টের keys().hasOnly()
+      // চেক করা হতো (আগে যেমন ছিল), তাহলে সেই দুটো এক্সট্রা ফিল্ড ডকুমেন্টে
+      // চলে আসার পর ইউজার লোকেশন/মেথড বদলালে (menu.js → updatePushLocationIfSubscribed
+      // → savePushSubscription-এর merge:true write) client-এর নিজের আপডেটই
+      // hasOnly()-তে ফেইল করে reject হয়ে যেত — নোটিফিকেশন পাঠানো শুরু হওয়ার
+      // পর থেকে লোকেশন/মেথড আপডেট নিঃশব্দে আর সেভ হতো না। এখন exams
+      // collection-এর মতোই diff().affectedKeys() দিয়ে শুধু client যা
+      // পরিবর্তন করছে সেটুকুই চেক করা হয়, সার্ভারের যোগ করা ফিল্ড উপেক্ষা
+      // করে।
       allow read: if false;
-      allow create, update: if request.resource.data.keys().hasOnly(['token','lat','lon','method','updatedAt'])
+
+      allow create: if request.resource.data.keys().hasOnly(['token','lat','lon','method','updatedAt'])
         && request.resource.data.token is string
         && request.resource.data.lat is number && request.resource.data.lat >= -90 && request.resource.data.lat <= 90
         && request.resource.data.lon is number && request.resource.data.lon >= -180 && request.resource.data.lon <= 180;
+
+      allow update: if request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['token','lat','lon','method','updatedAt'])
+        && request.resource.data.token is string
+        && request.resource.data.lat is number && request.resource.data.lat >= -90 && request.resource.data.lat <= 90
+        && request.resource.data.lon is number && request.resource.data.lon >= -180 && request.resource.data.lon <= 180;
+
       allow delete: if true;
     }
 
