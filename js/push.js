@@ -1,7 +1,7 @@
 // ---------- Prayer time push notifications (works even when app is closed) ----------
 // Requires: firebase-messaging-compat.js loaded in index.html, and a VAPID key
 // from Firebase Console → Project settings → Cloud Messaging → Web Push certificates.
-const VAPID_KEY = 'BDMuElee0scSDou9fQorTUFsmu7FBHWY4ogWAvwY5u7U6LbXyggoHorNqWanpw5KQLesdsaBlN6UHTHcSU1ePnU';
+const VAPID_KEY = 'BPTvhuvnIENqKYMshsG8jCV0gATwHmw5vPU43KnC1fhZ4S7DQsUKaDT_u3bqVOUh9iCcB_hpneWvI6xV0-xygoc';
 
 function getDeviceId(){
   let id = IDBKV.get('qr_device_id');
