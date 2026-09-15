@@ -117,6 +117,15 @@ async function sendAiTafsirQuestion(){
   const question = inputEl.value.trim();
   if(!question) return;
 
+  // প্রথম প্রশ্ন পাঠানোর পরে সাজেস্টেড চিপগুলো (এই আয়াতের মূল শিক্ষা কী?
+  // ইত্যাদি) আর দরকার নেই — এগুলো সরিয়ে দিলে চ্যাট এরিয়া বড় জায়গা পায়,
+  // ফলে AI-এর উত্তর ভালোভাবে দেখা যায়।
+  const chipsEl = document.getElementById('aiTafsirChips');
+  if(chipsEl && chipsEl.childElementCount){
+    chipsEl.innerHTML = '';
+    chipsEl.style.display = 'none';
+  }
+
   inputEl.value = '';
   appendAiTafsirBubble('user', question);
   aiTafsirHistory.push({ role: 'user', parts: [{ text: question }] });
