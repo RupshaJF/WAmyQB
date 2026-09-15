@@ -18,23 +18,57 @@
 //
 // env variable যোগ/পরিবর্তনের পর Vercel-এ Redeploy বাধ্যতামূলক —
 // নাহলে চলমান ডিপ্লয়মেন্ট নতুন variable দেখতে পাবে না।
+//
+// ==== এই আপডেটে যা ঠিক হয়েছে ====
+// ১) FIREBASE_SERVICE_ACCOUNT না থাকলে বা ভুল ফরম্যাটে থাকলে আগে পুরো
+//    ফাংশনটাই ক্র্যাশ করে HTML/খালি এরর পেজ দিত (JSON.parse module-এর
+//    টপ-লেভেলে ছিল) — ব্রাউজারে তখন res.json() পার্স ব্যর্থ হয়ে
+//    "ইন্টারনেট সংযোগ পরীক্ষা করুন" জাতীয় ভুল বার্তা দেখাতো, আসল কারণ
+//    (কনফিগ মিসিং) কখনো বোঝা যেতো না। এখন এটা try/catch দিয়ে ধরা হয় এবং
+//    পরিষ্কার JSON এরর (`not_configured`) ফেরত দেয়।
+// ২) FIREBASE_SERVICE_ACCOUNT পেস্ট করার সময় private_key এর ভেতরের
+//    নিউলাইন (\n) মাঝে মাঝে literal দুই-ক্যারেক্টার ব্যাকস্ল্যাশ-n হয়ে
+//    যায় (Vercel dashboard এ পেস্ট করার সময়) — এতে admin.credential.cert
+//    ব্যর্থ হয়। এখন সেটা স্বয়ংক্রিয়ভাবে ঠিক করে নেয়।
+// ৩) গুগল প্রায়ই ফ্রি মডেলের নাম/লাইনআপ বদলায় বা বন্ধ করে দেয় (যেমন
+//    gemini-2.5-flash ১৬ অক্টোবর ২০২৬-এ বন্ধ হয়ে যাচ্ছে)। আগে একটামাত্র
+//    মডেল নাম হার্ডকোড ছিল — সেটা বন্ধ/পরিবর্তন হলেই পুরো ফিচার মরে
+//    যেতো। এখন একটা লিস্ট আছে — একটা মডেল ব্যর্থ হলে (৪০৪/কোটা/অন্য
+//    এরর) সাথে সাথে পরেরটা স্বয়ংক্রিয়ভাবে ট্রাই হয়, ইউজার কিছুই টের
+//    পায় না। ভবিষ্যতে গুগল আবার নাম বদলালেও অ্যাপ নিজে থেকেই সামলে
+//    নেবে যতক্ষণ লিস্টের অন্তত একটা মডেল চালু থাকে।
 
 const admin = require('firebase-admin');
 
+// ---------- Firebase Admin init (ক্র্যাশ-প্রুফ) ----------
+let firebaseInitError = null;
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(
-      JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
-    ),
-  });
+  try {
+    const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+    if (!raw) throw new Error('FIREBASE_SERVICE_ACCOUNT env variable খালি/নেই');
+    const svc = JSON.parse(raw);
+    // Vercel dashboard-এ পেস্ট করার সময় private_key এর নিউলাইন মাঝে মাঝে
+    // literal "\n" (ব্যাকস্ল্যাশ + n) থেকে যায় — থাকলে আসল নিউলাইনে বদলে দিন।
+    if (svc && typeof svc.private_key === 'string') {
+      svc.private_key = svc.private_key.replace(/\\n/g, '\n');
+    }
+    admin.initializeApp({ credential: admin.credential.cert(svc) });
+  } catch (e) {
+    firebaseInitError = e;
+  }
 }
+const db = admin.apps.length ? admin.firestore() : null;
 
-const db = admin.firestore();
-
-// গুগল মাঝেমধ্যেই ফ্রি মডেলের নাম/লাইনআপ বদলায়। Vercel-এর Function log-এ
-// "model not found"-জাতীয় এরর দেখলে aistudio.google.com-এ বর্তমান ফ্রি
-// মডেলের নাম দেখে শুধু এই একটা লাইন বদলে দিলেই চলবে।
-const GEMINI_MODEL = 'gemini-2.5-flash';
+// ---------- Gemini মডেল — ফলব্যাক লিস্ট (উপর থেকে নিচে ক্রমানুসারে ট্রাই হয়) ----------
+// গুগল ফ্রি মডেল প্রায়ই বদলায়/বন্ধ করে — একটা ব্যর্থ হলে পরেরটা অটো ট্রাই হয়।
+// সবগুলো ব্যর্থ হলে aistudio.google.com এ গিয়ে বর্তমান ফ্রি মডেলের নাম
+// দেখে এই লিস্টের উপরে নতুন একটা লাইন যোগ করে দিলেই চলবে।
+const GEMINI_MODELS = [
+  'gemini-3.1-flash-lite', // স্থিতিশীল, ফ্রি (billing লাগে না) — কমপক্ষে মে ২০২৭ পর্যন্ত
+  'gemini-3.5-flash-lite', // নতুন স্থিতিশীল ভার্সন, ফ্রি — কমপক্ষে জুলাই ২০২৭ পর্যন্ত
+  'gemini-2.5-flash',      // পুরনো মডেল, ১৬ অক্টোবর ২০২৬-এ বন্ধ হবে — ততদিন ব্যাকআপ হিসেবে
+  'gemini-flash-latest',   // গুগলের অটো-আপডেট alias — উপরের সব ব্যর্থ হলে শেষ ভরসা
+];
 const DAILY_LIMIT = 20; // ইউজার/ডিভাইস প্রতি দৈনিক প্রশ্নের সীমা
 
 const SYSTEM_PROMPT = 'আপনি একজন বিনয়ী ও জ্ঞানী ইসলামিক সহকারী। কুরআনের আয়াত ও ইসলামী বিষয়ে সহজ, নির্ভরযোগ্য বাংলা ভাষায় উত্তর দিন। উত্তর সংক্ষিপ্ত ও প্রাসঙ্গিক রাখুন। নিশ্চিত না হলে স্পষ্টভাবে সেটা জানান এবং একজন আলেমের সাথে পরামর্শ করার পরামর্শ দিন।';
@@ -48,13 +82,66 @@ function todayKeyDhaka() {
   }).format(new Date());
 }
 
+// একটা নির্দিষ্ট মডেল দিয়ে Gemini কল করে — সফল হলে answer টেক্সট, নাহলে null
+async function tryOneModel(model, contents) {
+  const geminiRes = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+        contents,
+      }),
+    }
+  );
+  const geminiData = await geminiRes.json().catch(() => ({}));
+  const candidate = geminiData && geminiData.candidates && geminiData.candidates[0];
+  const answer = candidate && candidate.content && candidate.content.parts
+    ? candidate.content.parts.map((p) => p.text || '').join('').trim()
+    : '';
+
+  if (!geminiRes.ok || !answer) {
+    return { ok: false, status: geminiRes.status, data: geminiData };
+  }
+  return { ok: true, answer };
+}
+
+// GEMINI_MODELS লিস্ট ক্রমানুসারে ট্রাই করে — প্রথমটা ব্যর্থ হলে পরেরটা,
+// এভাবে যতক্ষণ না একটা কাজ করে বা লিস্ট শেষ হয়ে যায়।
+async function askGeminiWithFallback(contents) {
+  let lastFailure = null;
+  for (const model of GEMINI_MODELS) {
+    try {
+      const result = await tryOneModel(model, contents);
+      if (result.ok) return { answer: result.answer, modelUsed: model };
+      // Vercel Dashboard → Project → Logs-এ এই লাইনটা দেখলে কোন মডেল কেন
+      // ব্যর্থ হলো (ভুল নাম, কোটা শেষ, বিলিং লাগবে ইত্যাদি) বোঝা যাবে
+      console.error(`ai-tafsir: model "${model}" ব্যর্থ, status ${result.status}`, JSON.stringify(result.data).slice(0, 500));
+      lastFailure = result;
+    } catch (e) {
+      console.error(`ai-tafsir: model "${model}" কল করতে গিয়ে এরর:`, e.message);
+      lastFailure = { status: 0, data: { error: e.message } };
+    }
+  }
+  return { answer: null, failure: lastFailure };
+}
+
 module.exports = async (req, res) => {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'POST ব্যবহার করুন' });
   }
 
-  if (!process.env.GEMINI_API_KEY || !process.env.FIREBASE_SERVICE_ACCOUNT) {
-    console.error('ai-tafsir: GEMINI_API_KEY অথবা FIREBASE_SERVICE_ACCOUNT env variable সেট করা নেই');
+  if (!process.env.GEMINI_API_KEY || !process.env.FIREBASE_SERVICE_ACCOUNT || firebaseInitError || !db) {
+    console.error(
+      'ai-tafsir: not configured —',
+      !process.env.GEMINI_API_KEY ? 'GEMINI_API_KEY নেই' : '',
+      !process.env.FIREBASE_SERVICE_ACCOUNT ? 'FIREBASE_SERVICE_ACCOUNT নেই' : '',
+      firebaseInitError ? `Firebase init এরর: ${firebaseInitError.message}` : ''
+    );
     return res.status(500).json({ error: 'not_configured' });
   }
 
@@ -123,40 +210,17 @@ module.exports = async (req, res) => {
     }
     contents.push({ role: 'user', parts: [{ text: questionText }] });
 
-    const geminiRes = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': process.env.GEMINI_API_KEY,
-        },
-        body: JSON.stringify({
-          system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-          contents,
-        }),
-      }
-    );
+    const { answer } = await askGeminiWithFallback(contents);
 
-    const geminiData = await geminiRes.json().catch(() => ({}));
-
-    if (!geminiRes.ok) {
-      // Vercel Dashboard → Project → Logs-এ এই লাইনটা দেখলে আসল কারণ
-      // (ভুল API key, ভুল মডেল নাম, কোটা শেষ, বিলিং লাগবে ইত্যাদি) বোঝা যাবে
-      console.error('ai-tafsir: Gemini API error', geminiRes.status, JSON.stringify(geminiData));
-      // ব্যর্থ কলের জন্য দৈনিক সীমা থেকে এই প্রশ্নটা ফেরত দিন — Google/
-      // আমাদের সমস্যায় ইউজারের কোটা যেন নষ্ট না হয়
+    if (!answer) {
+      // লিস্টের সবগুলো মডেলই ব্যর্থ হলে দৈনিক সীমা থেকে এই প্রশ্নটা ফেরত
+      // দিন — Google/আমাদের সমস্যায় ইউজারের কোটা যেন নষ্ট না হয়
       await usageRef.set({ count: admin.firestore.FieldValue.increment(-1) }, { merge: true });
       return res.status(502).json({ error: 'upstream_error' });
     }
 
-    const candidate = geminiData && geminiData.candidates && geminiData.candidates[0];
-    const answer = candidate && candidate.content && candidate.content.parts
-      ? candidate.content.parts.map((p) => p.text || '').join('')
-      : '';
-
     return res.status(200).json({
-      answer: answer || 'দুঃখিত, উত্তর তৈরি করা যায়নি।',
+      answer,
       remainingToday: Math.max(0, DAILY_LIMIT - newCount),
     });
   } catch (e) {
