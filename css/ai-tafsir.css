@@ -20,8 +20,12 @@
 
 /* ---- চ্যাট এলাকা ---- */
 .ait-chat{
+  /* flex:1 নিজেই .ait-box কলামের বাকি জায়গা নেবে (হেড/কনটেক্সট/চিপ/ইনপুট/ফুটার
+     বাদ দিয়ে) — আগে max-height:42vh দিয়ে জোর করে ছোট রাখা হতো, চিপ সরিয়ে
+     দেওয়ার পরেও তাই জায়গা বাড়তো না। এখন চিপ সরে গেলে চ্যাট এরিয়া নিজে থেকেই
+     বড় হয়ে সেই জায়গা নিয়ে নেয়। */
   flex:1;overflow-y:auto;padding:14px 18px;display:flex;flex-direction:column;gap:10px;
-  min-height:180px;max-height:42vh;
+  min-height:180px;
 }
 .ait-bubble{
   max-width:86%;padding:10px 13px;border-radius:14px;font-family:var(--font-ui,'Hind Siliguri'),sans-serif;
@@ -79,6 +83,5 @@
 .ait-disclaimer{display:block;font-size:11px;color:var(--ink-soft);line-height:1.5;opacity:.85;}
 
 @media (max-width:480px){
-  .ait-chat{max-height:38vh;}
   .ait-bubble{max-width:92%;}
 }
