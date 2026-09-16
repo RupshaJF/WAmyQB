@@ -5,35 +5,67 @@
 //  - Reciter audio (islamic.network) -> cache-first; once an ayah is played it is
 //                                       saved forever so it can be replayed with no data
 //  - Google Fonts                    -> stale-while-revalidate
+//
+// WHY OFFLINE RELOADS USED TO FAIL (fixed below):
+// A service worker's top-level script re-runs from scratch every time the
+// browser (re)starts it, which happens on every navigation once it has sat
+// idle for a while (browsers kill an idle worker after a short period of
+// inactivity — well under a minute). If ANY top-level statement throws
+// during that re-run, the whole file aborts right there, and everything
+// below it — including the install/activate/fetch listeners that make the
+// app work offline — never gets registered; the browser then falls through
+// to a plain network request, which fails the instant you're offline.
+// That is exactly what was happening: the Firebase Messaging import a few
+// lines down reaches across the network to a third-party CDN (gstatic.com)
+// on every single restart, offline or not. While the app was already open,
+// the worker was still warm in memory from its last successful run, so its
+// fetch handler kept serving cached content just fine — losing connectivity
+// mid-session doesn't kill an already-running worker. But refreshing after
+// being offline for a bit forced a cold start: the Firebase import failed
+// with no network, the script aborted before ever reaching
+// self.addEventListener('fetch', ...), and the cached shell never got a
+// chance to answer. The Firebase section below is now wrapped in try/catch
+// so a failure there — offline, gstatic.com blocked by an extension, a
+// flaky connection, anything — can only ever cost that one run its push
+// notifications, and can never again take down offline mode.
 importScripts('./js/data.js');
 
 // ---------- Prayer time push notifications (Firebase Cloud Messaging) ----------
 // Handles notifications sent by the server-side script even when the app is
-// closed. This does not affect any of the offline caching logic below.
-importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js');
-importScripts('./js/firebase-config.js');
+// closed. See the note above: this is deliberately isolated so it can never
+// block the offline caching logic that follows it.
+try {
+  importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js');
+  importScripts('https://www.gstatic.com/firebasejs/10.13.2/firebase-messaging-compat.js');
+  importScripts('./js/firebase-config.js');
 
-firebase.initializeApp(FIREBASE_CONFIG);
-const messaging = firebase.messaging();
+  firebase.initializeApp(FIREBASE_CONFIG);
+  const messaging = firebase.messaging();
 
-messaging.onBackgroundMessage((payload) => {
-  const title = (payload.notification && payload.notification.title) || 'নামাজের সময়';
-  const body = (payload.notification && payload.notification.body) || 'নামাজের জন্য প্রস্তুত হোন।';
-  self.registration.showNotification(title, {
-    body,
-    icon: 'icons/icon-192.png',
-    badge: 'icons/icon-192.png',
-    tag: (payload.data && payload.data.prayer) || 'prayer-notify'
+  messaging.onBackgroundMessage((payload) => {
+    const title = (payload.notification && payload.notification.title) || 'নামাজের সময়';
+    const body = (payload.notification && payload.notification.body) || 'নামাজের জন্য প্রস্তুত হোন।';
+    self.registration.showNotification(title, {
+      body,
+      icon: 'icons/icon-192.png',
+      badge: 'icons/icon-192.png',
+      tag: (payload.data && payload.data.prayer) || 'prayer-notify'
+    });
   });
-});
+} catch (err) {
+  // Expected whenever this run happens offline — push notifications need a
+  // live connection to mean anything anyway, so there's nothing lost here
+  // beyond this one worker lifetime, and the next successful run picks
+  // Firebase back up automatically. Logged only for debugging.
+  console.warn('[sw] Firebase Messaging skipped this run (offline, or gstatic.com unreachable) — offline caching below is unaffected:', err);
+}
 
 const KNOWN_CACHES = [SHELL_CACHE_NAME, API_CACHE_NAME, AUDIO_CACHE_NAME, FONT_CACHE_NAME];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
     caches.open(SHELL_CACHE_NAME)
-      .then((cache) => cache.addAll(APP_SHELL_FILES))
+      .then((cache) => precacheResilient(cache, APP_SHELL_CORE))
       .then(() => self.skipWaiting())
   );
 });
@@ -45,6 +77,12 @@ self.addEventListener('activate', (event) => {
         names.filter((n) => !KNOWN_CACHES.includes(n)).map((n) => caches.delete(n))
       ))
       .then(() => self.clients.claim())
+      // Deliberately AFTER clients.claim(), so it never delays the worker
+      // taking control of already-open pages. Best-effort background pass
+      // that finishes caching every remaining app file (not just the core
+      // reading/listening path) within moments of the first successful
+      // visit — see precacheDeferredInBackground() below.
+      .then(() => precacheDeferredInBackground())
   );
 });
 
@@ -84,16 +122,71 @@ async function broadcast(msg) {
   clientsList.forEach((c) => c.postMessage(msg));
 }
 
+// Caches each file one at a time instead of the atomic caches.addAll() the
+// install step used before. addAll() is all-or-nothing — a single
+// unreachable file (a transient blip on one CDN request, a renamed file
+// that slipped out of sync with this list) used to silently fail the ENTIRE
+// precache and leave the app with no offline shell at all, install after
+// install. Now one miss is just skipped and logged; everything else still
+// gets cached, and the fetch handler's own cache-first fallback picks up
+// the missed file the first time it's actually requested.
+async function precacheResilient(cache, files) {
+  await Promise.all(files.map(async (url) => {
+    try {
+      const res = await fetch(url, { cache: 'reload' });
+      if (res && res.ok) await cache.put(url, res.clone());
+    } catch (e) {
+      console.warn('[sw] precache skipped, will cache on first use instead:', url, e);
+    }
+  }));
+}
+
+// Quietly finishes caching every APP_SHELL_DEFERRED file (auth, admin, AI
+// তাফসীর, exam, MFA, Status, hadith, theme builder, and the rest) in the
+// background, so the whole app is offline-ready within moments of the
+// first successful visit — not just the core shell, and not just whatever
+// screens happen to have been opened already. Mirrors how
+// js/auto-offline.js already does this for surah audio. Never allowed to
+// throw or block activation: any failure here (offline, one file
+// unreachable) just means that file waits for the ordinary cache-first
+// fetch handler to catch it on first real use instead, exactly as before
+// this existed.
+async function precacheDeferredInBackground() {
+  try {
+    const cache = await caches.open(SHELL_CACHE_NAME);
+    for (const url of APP_SHELL_DEFERRED) {
+      try {
+        if (await cache.match(url)) continue;
+        const res = await fetch(url, { cache: 'reload' });
+        if (res && res.ok) await cache.put(url, res.clone());
+      } catch (e) { /* offline, or this one file is unreachable right now —
+                       cache-first below will still catch it on first use */ }
+    }
+  } catch (e) { /* never let background pre-caching affect the worker */ }
+}
+
 self.addEventListener('fetch', (event) => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
 
-  // Full-page navigations: try the network, otherwise serve the cached shell
-  // so the app still opens (to the last-known UI) with zero connectivity.
+  // Full-page navigations: try the network, otherwise serve the cached
+  // shell so the app still opens (to the last-known UI) with zero
+  // connectivity. ignoreSearch matters here: launching the installed app
+  // from a manifest shortcut (see manifest.json — "./index.html?shortcut=
+  // continue" etc.) is a different URL from the plain "./index.html" that
+  // got precached, so without it a shortcut launch while offline would miss
+  // the cache entirely and fail. Checking caches.match(req) first (also
+  // ignoring the query string) means any more specific cached match still
+  // wins; caches.match('./index.html') is the guaranteed-to-exist fallback
+  // under that.
   if (req.mode === 'navigate') {
     event.respondWith(
-      fetch(req).catch(() => caches.match('./index.html'))
+      fetch(req).catch(() =>
+        caches.match(req, { ignoreSearch: true }).then((cached) =>
+          cached || caches.match('./index.html', { ignoreSearch: true })
+        )
+      )
     );
     return;
   }
