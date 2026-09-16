@@ -52,7 +52,7 @@ const THEMES = [
 
 // Bump the version suffix any time app-shell files change so the service
 // worker picks up a fresh copy instead of serving a stale cached version.
-const SW_VERSION = 'v1.02.42';
+const SW_VERSION = 'v1.02.43';
 const SHELL_CACHE_NAME = `qr-shell-${SW_VERSION}`;
 const API_CACHE_NAME = `qr-api-${SW_VERSION}`;
 const AUDIO_CACHE_NAME = `qr-audio-${SW_VERSION}`;
@@ -61,15 +61,19 @@ const FONT_CACHE_NAME = `qr-fonts-${SW_VERSION}`;
 // ---------- Tiered offline precache ----------
 // Only what's needed for the app to open, show the home screen, and read/
 // listen to a surah goes into the install-time precache (APP_SHELL_CORE).
-// Everything else (auth, theme builder, hadith, qibla, ramadan, stats,
-// share-card, download manager, translation help, non-default UI
-// languages, surah info/benefits, transliteration) is NOT force-downloaded
-// on install — it's still fully cached for offline use the first time its
-// own <script> tag is actually fetched, because sw.js's fetch handler
-// already does cache-first for every same-origin request regardless of
-// this list. Trimming this list only changes what's proactively downloaded
-// before the listener has done anything, cutting the first-install payload
-// by roughly the size of those deferred files.
+// Everything else (auth, admin, AI তাফসীর, exam, MFA, Status, theme
+// builder, hadith, qibla, ramadan, stats, share-card, download manager,
+// translation help, non-default UI languages, surah info/benefits,
+// transliteration) is NOT force-downloaded on install — instead sw.js
+// caches every one of these in a low-priority background pass right after
+// the worker activates (precacheDeferredInBackground() in sw.js), and
+// either way the fetch handler already does cache-first for every
+// same-origin request regardless of this list, so first real use also
+// caches it. Trimming this list only keeps the initial install (and the
+// pause before the app can open the very first time) short even on a slow
+// connection — the background pass right after still finishes the rest
+// within moments, so the whole app ends up available offline, not just
+// whatever's been opened so far.
 const APP_SHELL_CORE = [
   './',
   './index.html',
@@ -118,7 +122,15 @@ const APP_SHELL_CORE = [
   './icons/icon-512.png'
 ];
 
-// Cached lazily on first real use instead of at install — see note above.
+// Cached in the background right after the worker activates, and either way
+// on first real use — see note above. Kept in sync with every <script src>
+// and <link rel="stylesheet"> in index.html that isn't already in
+// APP_SHELL_CORE (checked file-by-file against index.html while fixing the
+// offline-reload bug — 21 files, 11 JS + 10 CSS, had quietly drifted out of
+// this list as features were added and weren't tracked anywhere; harmless
+// before since cache-first still picked them up on first use, but now that
+// the background pass below actually reads this list, keep it complete so
+// nothing is left waiting for a first visit instead of being ready upfront).
 const APP_SHELL_DEFERRED = [
   './js/surah-info.js',
   './js/surah-benefits.js',
@@ -138,9 +150,12 @@ const APP_SHELL_DEFERRED = [
   './js/transliteration.js',
   './js/emailjs-config.js',
   './js/otp.js',
+  './js/totp.js',
+  './js/mfa.js',
   './js/session-security.js',
   './js/auth.js',
   './js/reset-password.js',
+  './js/profile-view.js',
   './js/push.js',
   './js/topics.js',
   './js/planner.js',
@@ -156,12 +171,33 @@ const APP_SHELL_DEFERRED = [
   './js/auto-offline.js',
   './js/theme-builder.js',
   './js/hadith.js',
-  './js/donation-banner.js'
+  './js/donation-banner.js',
+  './js/admin.js',
+  './js/exam.js',
+  './js/status.js',
+  './js/status-highlights.js',
+  './js/status-voice.js',
+  './js/ai-tafsir.js',
+  './js/ai-tafsir-diagram.js',
+  './js/error-logger.js',
+  './css/onboarding.css',
+  './css/donation.css',
+  './css/mfa.css',
+  './css/profile-page.css',
+  './css/exam.css',
+  './css/status.css',
+  './css/status-extra.css',
+  './css/stats-extra.css',
+  './css/ai-tafsir.css',
+  './css/ai-tafsir-diagram.css'
 ];
 
-// sw.js installs APP_SHELL_CORE only. Kept as one combined list too, in case
-// anything elsewhere still expects the full historical APP_SHELL_FILES name.
-const APP_SHELL_FILES = APP_SHELL_CORE;
+// sw.js precaches APP_SHELL_CORE at install and now also precaches every
+// APP_SHELL_DEFERRED file in the background right after activation (see
+// precacheDeferredInBackground() in sw.js) — together they're the whole
+// app. Kept as one combined list too, in case anything elsewhere expects
+// the full historical APP_SHELL_FILES name.
+const APP_SHELL_FILES = [...APP_SHELL_CORE, ...APP_SHELL_DEFERRED];
 
 const bnDigits = ['০','১','২','৩','৪','৫','৬','৭','৮','৯'];
 function toBn(n){ return String(n).split('').map(d => /[0-9]/.test(d) ? bnDigits[+d] : d).join(''); }
