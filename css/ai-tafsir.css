@@ -12,7 +12,13 @@
    কাউন্টার, সেন্ড বাটনে স্পিনার, প্রতি-আয়াত এন্ট্রি বাটনের (js/reader.js)
    জন্য হালকা গোল্ড অ্যাকসেন্ট। এখনো কোথাও blur/glow/gradient নেই — শুধু
    বার্তা আসার সময় হালকা fade+slide (prefers-reduced-motion এ base.css এর
-   গ্লোবাল রুল অনুযায়ী বন্ধ হয়ে যায়)। */
+   গ্লোবাল রুল অনুযায়ী বন্ধ হয়ে যায়)।
+
+   ==== আধুনিকীকরণ পর্ব ২ (এই আপডেট) ====
+   .ait-chips-label যোগ হয়েছে (dynamic ফলো-আপ সাজেশনের উপরের ছোট্ট লেবেল)।
+   ডায়াগ্রাম ব্লকের (.ait-diagram ও তার ভেতরের timeline/tree/compare/
+   steps/list ক্লাসগুলো) সব স্টাইল আলাদা css/ai-tafsir-diagram.css ফাইলে —
+   এই ফাইলটা শুধু চ্যাট-শেল নিয়েই থাকে, ওই কারণে বড় হয়নি। */
 
 .ait-box{
   max-width:560px;max-height:88vh;
@@ -93,8 +99,17 @@
 .ait-bubble.ait-typing span:nth-child(3){animation-delay:.3s;}
 @keyframes aitTypingDot{0%,60%,100%{transform:translateY(0);opacity:.5;}30%{transform:translateY(-4px);opacity:1;}}
 
-/* ---- সাজেস্টেড প্রশ্ন চিপ ---- */
+/* ---- সাজেস্টেড প্রশ্ন চিপ ----
+   dynamic (প্রতিটা AI উত্তরের পরের প্রসঙ্গ-ভিত্তিক সাজেশন) চিপের উপরে
+   ছোট্ট লেবেল বসে (js/ai-tafsir.js এর renderAiTafsirChips) — flex-basis:
+   100% দিয়ে নিজের লাইনে বসে, চিপগুলো তার নিচে wrap করে। ---- */
 .ait-chips{display:flex;flex-wrap:wrap;gap:7px;padding:0 18px 10px;flex-shrink:0;}
+.ait-chips-label{
+  flex-basis:100%;display:flex;align-items:center;gap:5px;
+  font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:11px;color:var(--ink-soft);
+  margin-bottom:1px;
+}
+.ait-chips-label i{color:var(--gold);font-size:10px;}
 .ait-chip{
   background:var(--sage);border:1px solid var(--line);color:var(--ink);border-radius:999px;
   padding:7px 13px;font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:12.5px;
