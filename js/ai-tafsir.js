@@ -27,22 +27,87 @@
 //    করে আবার খুললে chips.style.display='none' রয়ে যেত — নতুন সাজেশন আর
 //    কখনো দেখাতো না। এখন প্রতিবার openAiTafsirModal এ রিসেট হয়।
 // ============================================================
+//
+// ==== আধুনিকীকরণ পর্ব ২ (এই আপডেট): ডায়াগ্রাম + অটো-সাজেশন ====
+//  · api/ai-tafsir.js এখন প্রতিটা উত্তরের সাথে (প্রাসঙ্গিক হলে) একটা
+//    structured diagram অবজেক্টও পাঠায় (timeline/tree/compare/steps/
+//    list) — রেন্ডারিং js/ai-tafsir-diagram.js এ, সম্পূর্ণ pure JS+CSS,
+//    কোনো চার্ট/ডায়াগ্রাম লাইব্রেরি ছাড়াই। appendAiTafsirBubble() bubble
+//    এর ঠিক নিচে বসায় (renderAiTafsirDiagram লোড না থাকলেও চ্যাট ভাঙে না)।
+//  · প্রতিটা AI উত্তরের পরে এখন নতুন, প্রসঙ্গ-ভিত্তিক ৩টা সাজেস্টেড প্রশ্ন
+//    (Gemini থেকেই আসে, কুরআন/ইসলাম বিষয়ে সীমাবদ্ধ) চিপ আকারে দেখায় —
+//    আগে প্রথম প্রশ্ন পাঠানোর পরে চিপ চিরতরে লুকিয়ে যেতো, এখন প্রতি
+//    টার্নে renderAiTafsirChips() দিয়ে রিফ্রেশ হয় (নতুন সাজেশনের উপরে
+//    ছোট্ট "আপনি হয়তো জানতে চাইবেন" লেবেল বসে, শুরুর জেনেরিক চিপ থেকে
+//    আলাদা বোঝাতে)।
+//  · চ্যাট শুরুর স্ট্যাটিক চিপও এখন ৮টা প্রশ্নের পুল থেকে প্রতিবার মোডাল
+//    খোলার সময় র‍্যান্ডম ৩টা বেছে দেখায় (aiTafsirPickPrompts) — আগে
+//    সবসময় একই ৩টা দেখাতো।
+// ============================================================
 
 let aiTafsirHistory = [];        // [{role:'user'|'model', parts:[{text}]}, ...] — চলতি চ্যাটের সব টার্ন
 let aiTafsirCurrentAyah = null;  // {surahBn, ayahNum, arabic, translation} অথবা null (general mode)
 let aiTafsirBusy = false;
 
+// প্রতিবার মোডাল খোলার সময় এই পুল থেকে র‍্যান্ডম ৩টা বেছে দেখানো হয়
+// (aiTafsirPickPrompts) — তাই শুরুর চিপগুলোও বারবার একই থাকে না।
 const AI_TAFSIR_AYAH_PROMPTS = [
-  'আয়াতের মূল শিক্ষা কী?',
-  'আয়াতটি কোন প্রেক্ষাপটে নাযিল হয়েছিল?',
-  'আয়াতটি আমাদের কি ধরনের শিক্ষা দেয়'
+  'এই আয়াতের মূল শিক্ষা কী?',
+  'এই আয়াতটি কখন/কোন প্রেক্ষাপটে নাযিল হয়েছিল?',
+  'আজকের জীবনে এই আয়াত কীভাবে প্রয়োগ করা যায়?',
+  'এই আয়াতে ব্যবহৃত গুরুত্বপূর্ণ শব্দগুলোর অর্থ কী?',
+  'এই আয়াতের সাথে সম্পর্কিত অন্য আয়াত আছে কি?',
+  'এই আয়াত নিয়ে তাফসীরকারদের মধ্যে কোনো মতভেদ আছে কি?',
+  'এই আয়াত থেকে কী দোয়া বা আমল শেখা যায়?',
+  'এই আয়াতের ব্যাখ্যায় প্রাসঙ্গিক কোনো হাদিস আছে কি?'
 ];
 const AI_TAFSIR_GENERAL_PROMPTS = [
-  'সালাতে মনোযোগ ধরে রাখবো কিভাবে?',
-  'কুরআন এর মূল বিষয় বস্তু কী?',
+  'সালাতে মনোযোগ ধরে রাখার উপায় কী?',
+  'কুরআন তেলাওয়াতের আদব কী কী?',
   'তাওবা করার সঠিক নিয়ম কী?',
-  ' কুরআন তিলাওয়াত করা কী?'
+  'কুরআন মুখস্থ করার সহজ উপায় কী?',
+  'জুমার দিনের ফজিলত কী?',
+  'ইসলামে সবরের গুরুত্ব কতটুকু?',
+  'রমজানের রোজার হিকমত কী?',
+  'পিতামাতার হক সম্পর্কে ইসলাম কী বলে?'
 ];
+
+// pool থেকে (in-place না বদলে) র‍্যান্ডম n টা বেছে দেয় — Fisher-Yates shuffle
+function aiTafsirPickPrompts(pool, n){
+  const arr = pool.slice();
+  for(let i = arr.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr.slice(0, n || 3);
+}
+
+// চ্যাট শুরুর স্ট্যাটিক প্রশ্ন (openAiTafsirModal) আর প্রতিটা AI উত্তরের
+// পরের Gemini-জেনারেটেড প্রসঙ্গ-ভিত্তিক ফলো-আপ (sendAiTafsirQuestion) —
+// দুটোতেই এই একই ফাংশন দিয়ে চিপ বসে/মোছে। opts.dynamic:true হলে চিপের
+// উপরে ছোট্ট একটা লেবেল বসে, যাতে বোঝা যায় এগুলো এই মুহূর্তের আলাপের
+// ভিত্তিতে তৈরি — শুরুর জেনেরিক প্রশ্ন থেকে আলাদা।
+function renderAiTafsirChips(list, opts){
+  const chips = document.getElementById('aiTafsirChips');
+  const input = document.getElementById('aiTafsirInput');
+  if(!chips || !input) return;
+
+  if(!Array.isArray(list) || !list.length){
+    chips.innerHTML = '';
+    chips.style.display = 'none';
+    return;
+  }
+
+  const labelHtml = (opts && opts.dynamic)
+    ? '<span class="ait-chips-label"><i class="fa-solid fa-wand-magic-sparkles" aria-hidden="true"></i> আপনি হয়তো জানতে চাইবেন</span>'
+    : '';
+  chips.innerHTML = labelHtml + list.map(p => `<button type="button" class="ait-chip">${escapeHtml(p)}</button>`).join('');
+  chips.style.display = '';
+
+  chips.querySelectorAll('.ait-chip').forEach(c => {
+    c.onclick = () => { input.value = c.textContent; sendAiTafsirQuestion(); };
+  });
+}
 
 const AIT_MAX_CHARS = 2000;          // api/ai-tafsir.js এর question.slice(0,2000) এর সাথে মিলিয়ে রাখা
 const AIT_COUNTER_THRESHOLD = 1800;  // এর নিচে কাউন্টার লুকানো থাকে, অহেতুক জায়গা নেয় না
@@ -168,20 +233,15 @@ function openAiTafsirModal(ayahCtx){
       <div class="ait-ctx-surah">${escapeHtml(ayahCtx.surahBn || '')} · আয়াত ${toBn(ayahCtx.ayahNum || '')}</div>
       <div class="ait-ctx-ar">${ayahCtx.arabic || ''}</div>
       ${ayahCtx.translation ? `<div class="ait-ctx-tr">${escapeHtml(ayahCtx.translation)}</div>` : ''}`;
-    chips.innerHTML = AI_TAFSIR_AYAH_PROMPTS.map(p => `<button type="button" class="ait-chip">${p}</button>`).join('');
+    renderAiTafsirChips(aiTafsirPickPrompts(AI_TAFSIR_AYAH_PROMPTS), { dynamic: false });
   } else {
     head.style.display = 'none';
     head.innerHTML = '';
-    chips.innerHTML = AI_TAFSIR_GENERAL_PROMPTS.map(p => `<button type="button" class="ait-chip">${p}</button>`).join('');
+    renderAiTafsirChips(aiTafsirPickPrompts(AI_TAFSIR_GENERAL_PROMPTS), { dynamic: false });
   }
-  chips.style.display = ''; // আগের সেশনে চিপ হাইড হয়ে থাকলেও নতুন মোডাল-ওপেনে ফিরিয়ে আনে
-
-  document.querySelectorAll('#aiTafsirChips .ait-chip').forEach(c => {
-    c.onclick = () => { input.value = c.textContent; sendAiTafsirQuestion(); };
-  });
 
   appendAiTafsirBubble('model', ayahCtx
-    ? 'কুরআন অ্যাপে স্বাগতম!এই আয়াত নিয়ে যা জানতে চান জিজ্ঞাসা করুন।'
+    ? 'এই আয়াত নিয়ে যা জানতে চান জিজ্ঞাসা করুন। নিচের সাজেশনগুলো থেকেও বেছে নিতে পারেন।'
     : 'ইসলাম বা কুরআন নিয়ে যেকোনো প্রশ্ন করুন। কোনো নির্দিষ্ট আয়াতের ব্যাখ্যা জানতে চাইলে রিডারে সেই আয়াতের নিচের "AI তাফসীর" বাটন থেকে জিজ্ঞাসা করলে আরও নির্ভুল উত্তর পাবেন।'
   );
 
@@ -189,7 +249,7 @@ function openAiTafsirModal(ayahCtx){
   input.focus();
 }
 
-function appendAiTafsirBubble(role, text, isError){
+function appendAiTafsirBubble(role, text, isError, diagram){
   const body = document.getElementById('aiTafsirChat');
   if(!body) return null;
 
@@ -204,6 +264,14 @@ function appendAiTafsirBubble(role, text, isError){
   bubble.className = 'ait-bubble ait-' + role + (isError ? ' ait-error' : '');
   bubble.innerHTML = formatAiTafsirText(text);
   col.appendChild(bubble);
+
+  // diagram থাকলে bubble এর ঠিক নিচে বসে — js/ai-tafsir-diagram.js (আলাদা
+  // pure JS/CSS রেন্ডারার ফাইল) কোনো কারণে লোড না হলেও (typeof চেক) চ্যাট
+  // ভেঙে পড়ে না, শুধু ডায়াগ্রামটা বাদ যায়।
+  if(role === 'model' && !isError && diagram && typeof renderAiTafsirDiagram === 'function'){
+    const diagramEl = renderAiTafsirDiagram(diagram);
+    if(diagramEl) col.appendChild(diagramEl);
+  }
 
   if(role === 'model' && !isError && text && text.trim()){
     col.appendChild(aiTafsirCopyBtn(text));
@@ -276,14 +344,10 @@ async function sendAiTafsirQuestion(){
   const question = inputEl.value.trim();
   if(!question) return;
 
-  // প্রথম প্রশ্ন পাঠানোর পরে সাজেস্টেড চিপগুলো (এই আয়াতের মূল শিক্ষা কী?
-  // ইত্যাদি) আর দরকার নেই — এগুলো সরিয়ে দিলে চ্যাট এরিয়া বড় জায়গা পায়,
-  // ফলে AI-এর উত্তর ভালোভাবে দেখা যায়।
-  const chipsEl = document.getElementById('aiTafsirChips');
-  if(chipsEl && chipsEl.childElementCount){
-    chipsEl.innerHTML = '';
-    chipsEl.style.display = 'none';
-  }
+  // পাঠানোর সাথে সাথেই আগের চিপ সরিয়ে ফেলা হয় (উত্তর আসা পর্যন্ত পুরনো/
+  // অপ্রাসঙ্গিক সাজেশন দেখানো ঠিক না) — সফল উত্তর এলে নিচে
+  // renderAiTafsirChips() দিয়ে নতুন প্রসঙ্গ-ভিত্তিক সাজেশন আবার বসে।
+  renderAiTafsirChips([]);
 
   inputEl.value = '';
   aiTafsirResizeInput();
@@ -314,17 +378,18 @@ async function sendAiTafsirQuestion(){
     if(!res.ok){
       aiTafsirHistory.pop();
       if(data.error === 'rate_limited'){
-        appendAiTafsirBubble('model', 'দুঃখিত, তোমার লিমিট শেষ হয়ে গেছে । কালকে আবার চেষ্টা করো কেমন 😊', true);
+        appendAiTafsirBubble('model', 'আজকের জন্য প্রশ্নের সীমা শেষ হয়ে গেছে 🙏 আগামীকাল আবার চেষ্টা করুন।', true);
       } else if(data.error === 'not_configured'){
-        appendAiTafsirBubble('model', 'দুঃখিত, এই ফিউচারটি এখনো উপলব্ধ করা হয়নি।', true);
+        appendAiTafsirBubble('model', 'এই ফিচারটি এখনো সেটআপ করা হয়নি। SETUP_AI_TAFSIR.txt ফাইলটি অনুসরণ করুন।', true);
       } else {
-        appendAiTafsirBubble('model', 'দুঃখিত, কোথাও একটা সমস্যা হয়েছে।', true);
+        appendAiTafsirBubble('model', 'দুঃখিত, এখন উত্তর দিতে পারছি না। একটু পর আবার চেষ্টা করুন।', true);
       }
       return;
     }
 
-    appendAiTafsirBubble('model', data.answer || '');
+    appendAiTafsirBubble('model', data.answer || '', false, data.diagram || null);
     aiTafsirHistory.push({ role: 'model', parts: [{ text: data.answer || '' }] });
+    renderAiTafsirChips(Array.isArray(data.suggestions) ? data.suggestions : [], { dynamic: true });
     if(typeof data.remainingToday === 'number'){
       const counter = document.getElementById('aiTafsirRemaining');
       if(counter) counter.innerHTML = `<i class="fa-solid fa-hourglass-half"></i> আজ আর ${toBn(data.remainingToday)}টি প্রশ্ন করা যাবে`;
@@ -332,7 +397,7 @@ async function sendAiTafsirQuestion(){
   }catch(e){
     if(typingEl) typingEl.remove();
     aiTafsirHistory.pop();
-    appendAiTafsirBubble('model', 'দুঃখিত, তোমার ইন্টারনেট সংযোগ পরীক্ষা করো।', true);
+    appendAiTafsirBubble('model', 'ইন্টারনেট সংযোগ পরীক্ষা করুন।', true);
   }finally{
     aiTafsirBusy = false;
     if(sendBtn){ sendBtn.disabled = false; }
