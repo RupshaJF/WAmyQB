@@ -44,6 +44,14 @@
 //    (খুবই বিরল, নিচে parseStructuredAnswer দেখুন) পুরো raw টেক্সটটাই
 //    answer হিসেবে ব্যবহার হয় — অর্থাৎ diagram/suggestions না থাকলেও
 //    মূল উত্তর দেওয়া কখনো ভেঙে পড়ে না।
+// ৫) (নতুন) সাইন-ইন ছাড়া (অতিথি, deviceId ভিত্তিক) প্রশ্নের সীমা আগে
+//    সাইন-ইন করা ইউজারদের মতোই DAILY_LIMIT (দৈনিক ২০টা) ছিল — এখন আলাদা,
+//    অনেক ছোট, দৈনিক-না-হয়ে-সর্বমোট GUEST_LIMIT (নিচে দেখুন), একদম আলাদা
+//    Firestore কালেকশনে (ai_tafsir_guest_usage, কোনো তারিখ-সাফিক্স ছাড়া)
+//    ট্র্যাক হয়। সীমা শেষ হলে নতুন error code 'guest_limit_reached' ফেরত
+//    যায় (আগের 'rate_limited' থেকে আলাদা, যাতে ফ্রন্টএন্ড দুটো ক্ষেত্রে
+//    আলাদা বার্তা/সাইন-ইন CTA দেখাতে পারে — দেখুন js/ai-tafsir.js)। সাইন-ইন
+//    করা ইউজারদের (uid ভিত্তিক) দৈনিক DAILY_LIMIT ফ্লো অপরিবর্তিত।
 
 const admin = require('firebase-admin');
 
@@ -76,7 +84,8 @@ const GEMINI_MODELS = [
   'gemini-2.5-flash',      // পুরনো মডেল, ১৬ অক্টোবর ২০২৬-এ বন্ধ হবে — ততদিন ব্যাকআপ হিসেবে
   'gemini-flash-latest',   // গুগলের অটো-আপডেট alias — উপরের সব ব্যর্থ হলে শেষ ভরসা
 ];
-const DAILY_LIMIT = 20; // ইউজার/ডিভাইস প্রতি দৈনিক প্রশ্নের সীমা
+const DAILY_LIMIT = 20; // সাইন-ইন করা ইউজার প্রতি দৈনিক প্রশ্নের সীমা (Firebase uid ভিত্তিক, প্রতিদিন রিসেট হয়)
+const GUEST_LIMIT = 2;  // সাইন-ইন ছাড়া (অতিথি, deviceId ভিত্তিক) সর্বমোট প্রশ্নের সীমা — দৈনিক না, একবারই; এরপর সাইন-ইন/অ্যাকাউন্ট প্রয়োজন
 
 const SYSTEM_PROMPT = `আপনি একজন বিনয়ী ও জ্ঞানী ইসলামিক সহকারী। কুরআনের আয়াত ও ইসলামী বিষয়ে সহজ, নির্ভরযোগ্য বাংলা ভাষায় উত্তর দিন। উত্তর সংক্ষিপ্ত ও প্রাসঙ্গিক রাখুন। নিশ্চিত না হলে স্পষ্টভাবে সেটা জানান এবং একজন আলেমের সাথে পরামর্শ করার পরামর্শ দিন।
 
@@ -273,7 +282,7 @@ module.exports = async (req, res) => {
   }
 
   // পরিচয় নির্ধারণ — সাইন-ইন থাকলে Firebase uid যাচাই করে, না থাকলে
-  // anonymous deviceId দিয়ে দৈনিক সীমা গোনা হয়
+  // anonymous deviceId ব্যবহৃত হয় (isGuest = true)
   let identityKey = null;
   if (idToken) {
     try {
@@ -283,23 +292,33 @@ module.exports = async (req, res) => {
       console.error('ai-tafsir: idToken যাচাই ব্যর্থ:', e.message);
     }
   }
-  if (!identityKey) {
+  const isGuest = !identityKey;
+  if (isGuest) {
     if (!deviceId || typeof deviceId !== 'string') {
       return res.status(401).json({ error: 'পরিচয় শনাক্ত করা যায়নি, আবার চেষ্টা করুন' });
     }
     identityKey = `dev_${deviceId}`;
   }
 
-  const usageRef = db.collection('ai_tafsir_usage').doc(`${identityKey}_${todayKeyDhaka()}`);
+  // সাইন-ইন করা ইউজার: প্রতিদিন রিসেট হওয়া DAILY_LIMIT (আগের মতোই, তারিখ-
+  // সাফিক্সসহ ai_tafsir_usage এ)। অতিথি: ডিভাইস-প্রতি সর্বমোট GUEST_LIMIT —
+  // কোনো তারিখ-সাফিক্স নেই (তাই দিন বদলালেও রিসেট হয় না), সম্পূর্ণ আলাদা
+  // কালেকশনে (ai_tafsir_guest_usage), যাতে সাইন-ইন করা ইউজারদের দৈনিক
+  // ডকুমেন্টের সাথে গুলিয়ে না যায়। আরও প্রশ্নের একমাত্র উপায় অ্যাকাউন্ট
+  // খোলা/সাইন-ইন করা — দেখুন js/ai-tafsir.js এর অতিথি-সীমা গেট।
+  const limit = isGuest ? GUEST_LIMIT : DAILY_LIMIT;
+  const usageRef = isGuest
+    ? db.collection('ai_tafsir_guest_usage').doc(identityKey)
+    : db.collection('ai_tafsir_usage').doc(`${identityKey}_${todayKeyDhaka()}`);
 
   try {
-    // দৈনিক সীমা — ট্রানজেকশনে গুনে বাড়ানো হয়, যাতে পরপর দ্রুত একাধিক
-    // রিকোয়েস্ট (যেমন ডাবল-ট্যাপ) এলেও কেউ সীমা এড়িয়ে যেতে না পারে
+    // সীমা — ট্রানজেকশনে গুনে বাড়ানো হয়, যাতে পরপর দ্রুত একাধিক রিকোয়েস্ট
+    // (যেমন ডাবল-ট্যাপ) এলেও কেউ সীমা এড়িয়ে যেতে না পারে
     let newCount = null;
     const allowed = await db.runTransaction(async (tx) => {
       const snap = await tx.get(usageRef);
       const current = snap.exists ? (snap.data().count || 0) : 0;
-      if (current >= DAILY_LIMIT) return false;
+      if (current >= limit) return false;
       newCount = current + 1;
       tx.set(usageRef, {
         count: newCount,
@@ -309,7 +328,7 @@ module.exports = async (req, res) => {
     });
 
     if (!allowed) {
-      return res.status(429).json({ error: 'rate_limited' });
+      return res.status(429).json({ error: isGuest ? 'guest_limit_reached' : 'rate_limited' });
     }
 
     // পূর্ববর্তী চ্যাট-হিস্ট্রি (সর্বোচ্চ শেষ ১০ টার্ন — টোকেন খরচ নিয়ন্ত্রণে)
@@ -335,18 +354,18 @@ module.exports = async (req, res) => {
     const { answer, diagram, suggestions } = await askGeminiWithFallback(contents);
 
     if (!answer) {
-      // লিস্টের সবগুলো মডেলই ব্যর্থ হলে দৈনিক সীমা থেকে এই প্রশ্নটা ফেরত
-      // দিন — Google/আমাদের সমস্যায় ইউজারের কোটা যেন নষ্ট না হয়
+      // লিস্টের সবগুলো মডেলই ব্যর্থ হলে সীমা থেকে এই প্রশ্নটা ফেরত দিন —
+      // Google/আমাদের সমস্যায় ইউজারের/অতিথির কোটা যেন নষ্ট না হয়
       await usageRef.set({ count: admin.firestore.FieldValue.increment(-1) }, { merge: true });
       return res.status(502).json({ error: 'upstream_error' });
     }
 
-    return res.status(200).json({
-      answer,
-      diagram: diagram || null,
-      suggestions: suggestions || [],
-      remainingToday: Math.max(0, DAILY_LIMIT - newCount),
-    });
+    const response = { answer, diagram: diagram || null, suggestions: suggestions || [] };
+    // দুটোর মধ্যে শুধু একটাই ফেরত যায় (isGuest অনুযায়ী) — js/ai-tafsir.js
+    // যেটা পায় সেই অনুযায়ী দৈনিক-কাউন্টার বা অতিথি-কাউন্টার আপডেট করে।
+    if (isGuest) response.remainingGuestMessages = Math.max(0, limit - newCount);
+    else response.remainingToday = Math.max(0, limit - newCount);
+    return res.status(200).json(response);
   } catch (e) {
     console.error('ai-tafsir: unexpected error', e);
     return res.status(500).json({ error: 'server_error' });
