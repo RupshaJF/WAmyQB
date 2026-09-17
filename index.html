@@ -543,11 +543,22 @@
   <div class="app-modal-box ait-box">
     <div class="app-modal-head">
       <h3><i class="fa-solid fa-wand-magic-sparkles"></i> AI তাফসীর সহকারী</h3>
-      <button class="app-modal-close" id="aiTafsirClose">✕</button>
+      <div class="ait-head-actions">
+        <button class="app-modal-back ait-head-btn" id="aiTafsirNewChat" type="button" aria-label="নতুন আলোচনা" title="নতুন আলোচনা"><i class="fa-solid fa-pen-to-square"></i></button>
+        <button class="app-modal-back ait-head-btn" id="aiTafsirHistoryBtn" type="button" aria-label="আগের আলোচনা" title="আগের আলোচনা"><i class="fa-solid fa-clock-rotate-left"></i></button>
+        <button class="app-modal-close" id="aiTafsirClose">✕</button>
+      </div>
     </div>
     <div class="ait-ctx" id="aiTafsirHeadCtx" style="display:none;"></div>
     <div class="ait-chat-wrap">
       <div class="ait-chat" id="aiTafsirChat"></div>
+      <div class="ait-history-panel" id="aiTafsirHistoryPanel" style="display:none;">
+        <div class="ait-history-topbar">
+          <span><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i> আগের আলোচনা</span>
+          <button type="button" class="ait-history-close" id="aiTafsirHistoryClose" aria-label="বন্ধ করুন"><i class="fa-solid fa-xmark"></i></button>
+        </div>
+        <div class="ait-history-list" id="aiTafsirHistoryList"></div>
+      </div>
       <button type="button" class="ait-scroll-bottom" id="aiTafsirScrollBottom" aria-label="সর্বশেষ বার্তায় যান"><i class="fa-solid fa-arrow-down"></i></button>
     </div>
     <div class="ait-chips" id="aiTafsirChips"></div>
