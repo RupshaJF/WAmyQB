@@ -312,14 +312,9 @@ async function handleEmailLogin(){
   }
 }
 
-// ==== বাগফিক্স (এই আপডেট) ====
-// আগে এখানে সরাসরি fbAuth.sendPasswordResetEmail(email) কল হতো, যেটা
-// Firebase Console এর "Customize action URL" সেটিং এর উপর নির্ভরশীল —
-// সেই সেটিং বাগি হওয়ায় (দেখুন api/send-reset-email.js এর কমেন্ট) এই কলটাই
-// ব্যর্থ হতো, আর authErrorMessageBn() এর জেনেরিক ফলব্যাক বার্তা ছাড়া কিছু
-// বোঝার উপায় ছিল না। এখন api/send-reset-email.js এ POST করা হয় — সেই
-// ফাইলটা Firebase Admin SDK দিয়ে নিজে থেকেই একটা সঠিক action URL সহ লিংক
-// বানায় (Console এর বাগি সেটিং স্পর্শ না করেই) আর Gmail SMTP দিয়ে পাঠায়।
+// Firebase Authentication-এর নিজস্ব built-in পাসওয়ার্ড-রিসেট — কোনো কাস্টম
+// API/সার্ভার/থার্ড-পার্টি ইমেইল-সার্ভিস নেই। actionCodeSettings আসছে
+// js/firebase-config.js থেকে (PASSWORD_RESET_ACTION_CODE_SETTINGS)।
 async function handlePasswordReset(){
   const email = document.getElementById('fgEmail').value.trim();
   const errBox = document.getElementById('fgError');
@@ -328,22 +323,20 @@ async function handlePasswordReset(){
   const btn = document.getElementById('fgSubmit');
   btn.disabled = true; btn.textContent = 'পাঠানো হচ্ছে...';
   try{
-    const res = await fetch('/api/send-reset-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
-    });
-    const data = await res.json().catch(() => ({}));
-    if(!res.ok){
-      errBox.textContent = data.error === 'not_configured'
-        ? 'এই ফিচারটি এখনো সেটআপ করা হয়নি — SETUP_PASSWORD_RESET.txt দেখুন।'
-        : 'কিছু একটা সমস্যা হয়েছে, আবার চেষ্টা করুন।';
-      return;
-    }
+    await fbAuth.sendPasswordResetEmail(email, PASSWORD_RESET_ACTION_CODE_SETTINGS);
     showToast('পুনরুদ্ধারের লিঙ্ক ইমেইলে পাঠানো হয়েছে');
     closeAuthFlow();
   }catch(e){
-    errBox.textContent = 'ইন্টারনেট সংযোগ পরীক্ষা করুন।';
+    // কোন ইমেইল রেজিস্টার্ড আছে তা বাইরের কেউ যেন বুঝতে না পারে, তাই
+    // user-not-found তেও একই সফল বার্তা দেখানো হয়।
+    if(e && e.code === 'auth/user-not-found'){
+      showToast('পুনরুদ্ধারের লিঙ্ক ইমেইলে পাঠানো হয়েছে');
+      closeAuthFlow();
+    }else if(e && e.code === 'auth/invalid-email'){
+      errBox.textContent = 'সঠিক ইমেইল দিন।';
+    }else{
+      errBox.textContent = 'ইন্টারনেট সংযোগ পরীক্ষা করুন।';
+    }
   }finally{
     btn.disabled = false; btn.textContent = 'পুনরুদ্ধারের লিঙ্ক ইমেইল করুন';
   }
@@ -1048,19 +1041,14 @@ async function saveProfileChanges({ name, position, avatarColor, avatarIcon, pho
 async function handleSendPasswordReset(email){
   if(!email) return;
   try{
-    const res = await fetch('/api/send-reset-email', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email })
-    });
-    const data = await res.json().catch(() => ({}));
-    if(!res.ok){
-      showToast(data.error === 'not_configured' ? 'এই ফিচারটি এখনো সেটআপ করা হয়নি' : 'পাঠাতে ব্যর্থ হয়েছে, আবার চেষ্টা করুন');
-      return;
-    }
+    await fbAuth.sendPasswordResetEmail(email, PASSWORD_RESET_ACTION_CODE_SETTINGS);
     showToast('পাসওয়ার্ড রিসেট লিঙ্ক ইমেইলে পাঠানো হয়েছে');
   }catch(e){
-    showToast('ইন্টারনেট সংযোগ পরীক্ষা করুন');
+    if(e && e.code === 'auth/user-not-found'){
+      showToast('পাসওয়ার্ড রিসেট লিঙ্ক ইমেইলে পাঠানো হয়েছে');
+    }else{
+      showToast('পাঠাতে ব্যর্থ হয়েছে, আবার চেষ্টা করুন');
+    }
   }
 }
 
