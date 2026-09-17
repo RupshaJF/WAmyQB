@@ -109,6 +109,19 @@ function renderAiTafsirChips(list, opts){
   });
 }
 
+// প্রথম প্রশ্ন পাঠানোর সাথে সাথেই আয়াত-প্রসঙ্গ কার্ড (.ait-ctx) ভাঁজ করে
+// দেয় (sendAiTafsirQuestion থেকে ডাকা হয়) — চ্যাটের জন্য জায়গা ফাঁকা করতে।
+// এরপর ইউজার নিজে চেভরন বাটনে ট্যাপ করে যেকোনো সময় আবার খুলতে/বন্ধ করতে
+// পারবেন (openAiTafsirModal এ বসানো handler) — তাই এই ফাংশন শুধু প্রথমবার,
+// স্বয়ংক্রিয়ভাবে ভাঁজ করাতেই সীমাবদ্ধ, ইউজারের পরবর্তী পছন্দে হস্তক্ষেপ করে না।
+function aiTafsirAutoCollapseCtx(){
+  const head = document.getElementById('aiTafsirHeadCtx');
+  if(!head || head.classList.contains('ait-ctx-collapsed')) return;
+  head.classList.add('ait-ctx-collapsed');
+  const toggle = document.getElementById('aiTafsirCtxToggle');
+  if(toggle) toggle.setAttribute('aria-expanded', 'false');
+}
+
 const AIT_MAX_CHARS = 2000;          // api/ai-tafsir.js এর question.slice(0,2000) এর সাথে মিলিয়ে রাখা
 const AIT_COUNTER_THRESHOLD = 1800;  // এর নিচে কাউন্টার লুকানো থাকে, অহেতুক জায়গা নেয় না
 const AIT_TEXTAREA_MAX_H = 120;      // css/ai-tafsir.css এর textarea max-height এর সাথে মিলিয়ে রাখা
@@ -229,10 +242,25 @@ function openAiTafsirModal(ayahCtx){
 
   if(ayahCtx){
     head.style.display = 'block';
+    head.classList.remove('ait-ctx-collapsed');
     head.innerHTML = `
-      <div class="ait-ctx-surah">${escapeHtml(ayahCtx.surahBn || '')} · আয়াত ${toBn(ayahCtx.ayahNum || '')}</div>
-      <div class="ait-ctx-ar">${ayahCtx.arabic || ''}</div>
-      ${ayahCtx.translation ? `<div class="ait-ctx-tr">${escapeHtml(ayahCtx.translation)}</div>` : ''}`;
+      <div class="ait-ctx-top">
+        <div class="ait-ctx-surah">${escapeHtml(ayahCtx.surahBn || '')} · আয়াত ${toBn(ayahCtx.ayahNum || '')}</div>
+        <button type="button" class="ait-ctx-toggle" id="aiTafsirCtxToggle" aria-label="আয়াত দেখান/আড়াল করুন" aria-expanded="true"><i class="fa-solid fa-chevron-up"></i></button>
+      </div>
+      <div class="ait-ctx-body">
+        <div class="ait-ctx-body-inner">
+          <div class="ait-ctx-ar">${ayahCtx.arabic || ''}</div>
+          ${ayahCtx.translation ? `<div class="ait-ctx-tr">${escapeHtml(ayahCtx.translation)}</div>` : ''}
+        </div>
+      </div>`;
+    const ctxToggle = document.getElementById('aiTafsirCtxToggle');
+    if(ctxToggle){
+      ctxToggle.onclick = () => {
+        const collapsed = head.classList.toggle('ait-ctx-collapsed');
+        ctxToggle.setAttribute('aria-expanded', String(!collapsed));
+      };
+    }
     renderAiTafsirChips(aiTafsirPickPrompts(AI_TAFSIR_AYAH_PROMPTS), { dynamic: false });
   } else {
     head.style.display = 'none';
@@ -247,6 +275,31 @@ function openAiTafsirModal(ayahCtx){
 
   openModal('aiTafsirModal');
   input.focus();
+}
+
+// .ait-chat থেকে যথেষ্ট উপরে স্ক্রল করা থাকলে (নিচে>120px) .ait-scroll-bottom
+// FAB দেখায় — নতুন বার্তা এলে (নিচে দেখুন) আর ম্যানুয়াল স্ক্রলে (নিচে
+// DOMContentLoaded এ 'scroll' লিসেনার) দুই জায়গা থেকেই ডাকা হয়।
+function aiTafsirUpdateScrollFab(){
+  const chatEl = document.getElementById('aiTafsirChat');
+  const fab = document.getElementById('aiTafsirScrollBottom');
+  if(!chatEl || !fab) return;
+  const distanceFromBottom = chatEl.scrollHeight - chatEl.scrollTop - chatEl.clientHeight;
+  fab.classList.toggle('ait-visible', distanceFromBottom > 120);
+}
+
+// নতুন বার্তা আসলে স্ক্রল-পজিশন ঠিক করে — user এর নিজের (ছোট) বার্তার
+// ক্ষেত্রে একদম নিচে (চেনা চ্যাট-কনভেনশন), কিন্তু model এর উত্তরের
+// ক্ষেত্রে বার্তাটার *শুরু* (অ্যাভাটারসহ) দেখায়, একদম নিচে না — কারণ
+// উত্তর viewport এর চেয়ে লম্বা হলে "নিচে" স্ক্রল করলে শুরুটা (এমনকি
+// আগের বার্তাও) স্ক্রল হয়ে উপরে চলে যেতো, যেটাই ছিল আসল সমস্যা।
+// .ait-chat এখন position:absolute (css/ai-tafsir.css) তাই row.offsetTop
+// সরাসরি .ait-chat এর সাপেক্ষে নির্ভুল আসে।
+function aiTafsirScrollToRow(row, role){
+  const body = document.getElementById('aiTafsirChat');
+  if(!body || !row) return;
+  body.scrollTop = (role === 'user') ? body.scrollHeight : Math.max(0, row.offsetTop - 8);
+  aiTafsirUpdateScrollFab();
 }
 
 function appendAiTafsirBubble(role, text, isError, diagram){
@@ -279,7 +332,7 @@ function appendAiTafsirBubble(role, text, isError, diagram){
 
   row.appendChild(col);
   body.appendChild(row);
-  body.scrollTop = body.scrollHeight;
+  aiTafsirScrollToRow(row, role);
   return bubble;
 }
 
@@ -300,7 +353,7 @@ function appendAiTafsirTyping(){
 
   row.appendChild(col);
   body.appendChild(row);
-  body.scrollTop = body.scrollHeight;
+  aiTafsirScrollToRow(row, 'model');
   return row; // .remove() পুরো সারি (অ্যাভাটারসহ) সরিয়ে দেবে
 }
 
@@ -343,6 +396,9 @@ async function sendAiTafsirQuestion(){
   if(!inputEl) return;
   const question = inputEl.value.trim();
   if(!question) return;
+
+  // প্রথম প্রশ্ন — তাই আয়াত-কার্ড ভাঁজ করে চ্যাটের জন্য জায়গা ফাঁকা করা হয়
+  if(aiTafsirHistory.length === 0 && aiTafsirCurrentAyah) aiTafsirAutoCollapseCtx();
 
   // পাঠানোর সাথে সাথেই আগের চিপ সরিয়ে ফেলা হয় (উত্তর আসা পর্যন্ত পুরনো/
   // অপ্রাসঙ্গিক সাজেশন দেখানো ঠিক না) — সফল উত্তর এলে নিচে
@@ -414,6 +470,15 @@ document.addEventListener('DOMContentLoaded', () => {
   if(chatEl){
     chatEl.setAttribute('role', 'log');
     chatEl.setAttribute('aria-live', 'polite');
+    chatEl.addEventListener('scroll', aiTafsirUpdateScrollFab);
+  }
+
+  const scrollFab = document.getElementById('aiTafsirScrollBottom');
+  if(scrollFab){
+    scrollFab.onclick = () => {
+      const body = document.getElementById('aiTafsirChat');
+      if(body) body.scrollTo({ top: body.scrollHeight, behavior: 'smooth' });
+    };
   }
 
   if(inputEl){
