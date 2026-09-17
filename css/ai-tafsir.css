@@ -55,29 +55,42 @@
    ৪. পাতলা কাস্টম স্ক্রলবার (css/layout.css এর .list এর প্যাটার্ন অনুসরণ
       করে), সূক্ষ্ম shadow দিয়ে বাবল/FAB এ সামান্য depth (কোনো glow না,
       আগের মতোই flat), আর চ্যাট-চিরোম (header বাদে সবকিছু) এর প্যাডিং একটু
-      টাইট করে বাড়তি জায়গা বার করা হয়েছে। */
+      টাইট করে বাড়তি জায়গা বার করা হয়েছে।
+
+   ==== আধুনিকীকরণ পর্ব ৪ (এই আপডেট) — ফুলস্ক্রিন ====
+   height:680px দিয়েও মোডালটা তখনও একটা "ভাসমান কার্ড" ছিল — উপরে ৭০px
+   ফাঁকা জায়গা (.app-modal এর padding), গোলাকার কোণা, ডিমড ব্যাকড্রপ। এখন
+   #aiTafsirModal-কে সম্পূর্ণ ফুলস্ক্রিন করা হয়েছে (WhatsApp/Telegram/
+   ChatGPT-এর চ্যাট-ভিউয়ের মতো) — পুরো viewport জুড়ে, কোনো প্যাডিং/কোণা/
+   শ্যাডো ছাড়াই। শুধু এই একটা মোডালেই স্কোপ করা (#aiTafsirModal সিলেক্টর
+   দিয়ে) — Settings/Prayer/Dictionary ইত্যাদি বাকি সব মোডাল css/modals.css
+   এর সাধারণ ভাসমান-কার্ড স্টাইলেই থাকে, অপরিবর্তিত। সাজেস্টেড-প্রশ্ন চিপও
+   এখন ছোট (কম প্যাডিং/ফন্ট-সাইজ), যাতে বেশি পরিষ্কার আর কম ভারী লাগে। */
 
 .ait-box{
   max-width:560px;
-  /* height (max-height না) ইচ্ছাকৃত — কারণ ব্যাখ্যা উপরের কমেন্ট পয়েন্ট ৫ এ।
-     লক্ষ্য করুন: height:min(680px, calc(100vh - 86px)) — একসাথে min() আর
-     calc(vh) ব্যবহার করলে — এই নেস্টেড flex+grid (ctx এর ভাঁজ/খোলার
-     গ্রিড-অ্যানিমেশনের সাথে) স্ট্রাকচারে ait-ctx ভাঁজ হওয়ার সময় পুরো
-     .app-modal-box টাই ভুলভাবে ছোট হয়ে যেতো (Chromium-এ যাচাই করা একটা
-     রিফ্লো কুইর্ক — min()+calc(vh) একসাথে ব্যবহার করলেই শুধু ঘটে, একা
-     একা কোনোটাতেই না)। তাই height (স্থির) আর max-height (calc/vh-ভিত্তিক)
-     কে আলাদা প্রপার্টি হিসেবে রাখা হয়েছে — দুটোই আলাদাভাবে টেস্ট করে
-     নিশ্চিত করা হয়েছে যে ctx ভাঁজ/খোলা কোনো অবস্থাতেই আর মোডালের
-     উচ্চতা পাল্টায় না। ৬৮০px — মোবাইলে প্রায় পুরো viewport ব্যবহার হয়
-     (max-height ছোট viewport-এ ক্ল্যাম্প করে), বড় স্ক্রিনে ৬৮০px এ ক্যাপ
-     হয়ে থাকে, অন্য সব চ্যাট-অ্যাপের মতোই। .app-modal এর
-     padding:70px 16px 16px (top+bottom=86px) এর সাথে হুবহু মিলিয়ে; dvh
-     সাপোর্ট থাকলে সেটাই ব্যবহার হবে (মোবাইল ব্রাউজারের dynamic
-     address-bar এর কারণে vh ভুল হওয়া ঠেকাতে)। */
   height:680px;
   max-height:calc(100vh - 86px);
   max-height:calc(100dvh - 86px);
 }
+/* ফুলস্ক্রিন — উপরের .ait-box রুলকে #aiTafsirModal এর ভেতরে সম্পূর্ণ
+   override করে (আইডি+ক্লাস স্পেসিফিসিটি বেশি বলে জিততে বাধ্য); .ait-box
+   ক্লাসটা যদি কখনো অন্য কোনো মোডালেও বসে, সেখানে পুরনো ভাসমান-কার্ড আকারই
+   থাকবে। height এখানে plain 100vh/100dvh — min()+calc() একসাথে না, তাই
+   উপরের কমেন্টে বলা রিফ্লো-কুইর্কের ঝুঁকি নেই। */
+#aiTafsirModal{padding:0;align-items:stretch;}
+#aiTafsirModal .ait-box{
+  width:100%;max-width:100%;
+  height:100vh;height:100dvh;
+  max-height:none;
+  border-radius:0;box-shadow:none;
+}
+/* সেফ-এরিয়া (নচ/স্ট্যাটাস বার): viewport-fit=cover চালু না থাকলে (এখন
+   নেই) এই env() মানগুলো 0-ই থাকে, তাই এখন দৃশ্যত কিছু বদলায় না — কিন্তু
+   ফুলস্ক্রিন যেহেতু সত্যিই স্ক্রিনের কিনারা পর্যন্ত যায়, নেটিভ র‍্যাপারে
+   (Median.co) বা ভবিষ্যতে viewport-fit=cover যোগ হলে এটা নিরাপদ থাকবে। */
+#aiTafsirModal .app-modal-head{padding-top:max(14px, env(safe-area-inset-top, 14px));}
+#aiTafsirModal .ait-footer{padding-bottom:max(12px, env(safe-area-inset-bottom, 12px));}
 
 /* ---- আয়াত-প্রসঙ্গ হেডার (নির্দিষ্ট আয়াত থেকে খোলা হলে দেখায়) ----
    বাম পাশে গোল্ড অ্যাকসেন্ট বর্ডার — উদ্ধৃত আয়াতকে সাধারণ প্যানেল-কার্ড
@@ -198,7 +211,7 @@
    dynamic (প্রতিটা AI উত্তরের পরের প্রসঙ্গ-ভিত্তিক সাজেশন) চিপের উপরে
    ছোট্ট লেবেল বসে (js/ai-tafsir.js এর renderAiTafsirChips) — flex-basis:
    100% দিয়ে নিজের লাইনে বসে, চিপগুলো তার নিচে wrap করে। ---- */
-.ait-chips{display:flex;flex-wrap:wrap;gap:7px;padding:0 18px 8px;flex-shrink:0;}
+.ait-chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 18px 8px;flex-shrink:0;}
 .ait-chips-label{
   flex-basis:100%;display:flex;align-items:center;gap:5px;
   font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:11px;color:var(--ink-soft);
@@ -207,7 +220,7 @@
 .ait-chips-label i{color:var(--gold);font-size:10px;}
 .ait-chip{
   background:var(--sage);border:1px solid var(--line);color:var(--ink);border-radius:999px;
-  padding:7px 13px;font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:12.5px;
+  padding:5px 10px;font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:11px;line-height:1.4;
   cursor:pointer;transition:background .15s ease,border-color .15s ease,transform .1s ease;
 }
 .ait-chip:hover{background:var(--gold-soft);border-color:var(--gold);}
