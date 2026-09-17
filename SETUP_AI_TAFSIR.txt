@@ -11,12 +11,11 @@ AI তাফসীর/প্রশ্নোত্তর সহকারী — �
      মান:   (১ নং ধাপে কপি করা key)
    এরপর প্রজেক্ট রি-ডিপ্লয় করুন (Vercel এর "Redeploy" বাটন)।
 
-৩) FIREBASE_SERVICE_ACCOUNT env variable আগে থেকেই থাকার কথা
-   (api/send-reset-email.js ফিচারের জন্য বসানো হয়েছিল) — এটাই এই
-   ফিচারও ব্যবহার করে দৈনিক প্রশ্ন-সংখ্যা গুনতে। যদি এটা এখনো না
-   বসানো থাকে: Firebase Console → Project settings → Service accounts
-   → Generate new private key → ডাউনলোড হওয়া JSON-এর পুরো কন্টেন্ট
-   এক লাইনে Vercel env variable হিসেবে বসান (নাম: FIREBASE_SERVICE_ACCOUNT)।
+৩) FIREBASE_SERVICE_ACCOUNT env variable লাগবে — এই ফিচার এটা দিয়ে
+   সাইন-ইন যাচাই ও দৈনিক প্রশ্ন-সংখ্যা গোনে। যদি এটা এখনো না বসানো
+   থাকে: Firebase Console → Project settings → Service accounts →
+   Generate new private key → ডাউনলোড হওয়া JSON-এর পুরো কন্টেন্ট এক
+   লাইনে Vercel env variable হিসেবে বসান (নাম: FIREBASE_SERVICE_ACCOUNT)।
 
 ৪) নতুন কোনো npm install লাগবে না — root package.json ইতিমধ্যে
    firebase-admin যোগ করা আছে, Vercel deploy করার সময় নিজে থেকেই
