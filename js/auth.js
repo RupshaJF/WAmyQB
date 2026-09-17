@@ -75,6 +75,11 @@ function refreshCurrentView(){
   // যাচাই/লুকানো হওয়া দরকার, পরের বার ট্যাব খোলার জন্য অপেক্ষা না করেই (js/exam.js)।
   const examView = document.getElementById('view-exam');
   if(examView && examView.classList.contains('active') && typeof checkExamAdminStatus === 'function') checkExamAdminStatus();
+  // AI তাফসীর মোডাল (js/ai-tafsir.js) খোলা থাকলে সাইন-ইন/আউট হওয়ার সাথে
+  // সাথেই অতিথি-সীমার গেট রিফ্রেশ/আনলক হওয়া দরকার — মোডাল বন্ধ-খোলা করা
+  // ছাড়াই, ঠিক উপরের ভিউগুলোর মতোই।
+  const aiTafsirModalEl = document.getElementById('aiTafsirModal');
+  if(aiTafsirModalEl && aiTafsirModalEl.style.display === 'flex' && typeof aiTafsirRefreshGateForAuthChange === 'function') aiTafsirRefreshGateForAuthChange();
 }
 
 // ---------- Sign-in / sign-up / forgot-password overlay ----------
@@ -307,6 +312,14 @@ async function handleEmailLogin(){
   }
 }
 
+// ==== বাগফিক্স (এই আপডেট) ====
+// আগে এখানে সরাসরি fbAuth.sendPasswordResetEmail(email) কল হতো, যেটা
+// Firebase Console এর "Customize action URL" সেটিং এর উপর নির্ভরশীল —
+// সেই সেটিং বাগি হওয়ায় (দেখুন api/send-reset-email.js এর কমেন্ট) এই কলটাই
+// ব্যর্থ হতো, আর authErrorMessageBn() এর জেনেরিক ফলব্যাক বার্তা ছাড়া কিছু
+// বোঝার উপায় ছিল না। এখন api/send-reset-email.js এ POST করা হয় — সেই
+// ফাইলটা Firebase Admin SDK দিয়ে নিজে থেকেই একটা সঠিক action URL সহ লিংক
+// বানায় (Console এর বাগি সেটিং স্পর্শ না করেই) আর Gmail SMTP দিয়ে পাঠায়।
 async function handlePasswordReset(){
   const email = document.getElementById('fgEmail').value.trim();
   const errBox = document.getElementById('fgError');
@@ -315,11 +328,22 @@ async function handlePasswordReset(){
   const btn = document.getElementById('fgSubmit');
   btn.disabled = true; btn.textContent = 'পাঠানো হচ্ছে...';
   try{
-    await fbAuth.sendPasswordResetEmail(email);
+    const res = await fetch('/api/send-reset-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      errBox.textContent = data.error === 'not_configured'
+        ? 'এই ফিচারটি এখনো সেটআপ করা হয়নি — SETUP_PASSWORD_RESET.txt দেখুন।'
+        : 'কিছু একটা সমস্যা হয়েছে, আবার চেষ্টা করুন।';
+      return;
+    }
     showToast('পুনরুদ্ধারের লিঙ্ক ইমেইলে পাঠানো হয়েছে');
     closeAuthFlow();
   }catch(e){
-    errBox.textContent = authErrorMessageBn(e);
+    errBox.textContent = 'ইন্টারনেট সংযোগ পরীক্ষা করুন।';
   }finally{
     btn.disabled = false; btn.textContent = 'পুনরুদ্ধারের লিঙ্ক ইমেইল করুন';
   }
@@ -1024,10 +1048,19 @@ async function saveProfileChanges({ name, position, avatarColor, avatarIcon, pho
 async function handleSendPasswordReset(email){
   if(!email) return;
   try{
-    await fbAuth.sendPasswordResetEmail(email);
+    const res = await fetch('/api/send-reset-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      showToast(data.error === 'not_configured' ? 'এই ফিচারটি এখনো সেটআপ করা হয়নি' : 'পাঠাতে ব্যর্থ হয়েছে, আবার চেষ্টা করুন');
+      return;
+    }
     showToast('পাসওয়ার্ড রিসেট লিঙ্ক ইমেইলে পাঠানো হয়েছে');
   }catch(e){
-    showToast('পাঠাতে ব্যর্থ হয়েছে, আবার চেষ্টা করুন');
+    showToast('ইন্টারনেট সংযোগ পরীক্ষা করুন');
   }
 }
 

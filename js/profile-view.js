@@ -208,6 +208,9 @@ async function handleEmailLoginPage(){
   }
 }
 
+// js/auth.js এর handlePasswordReset() এর মতোই বাগফিক্স — সরাসরি
+// fbAuth.sendPasswordResetEmail() এর বদলে api/send-reset-email.js
+// ব্যবহার করে (বিস্তারিত কারণ সেই ফাইলের কমেন্টে)।
 async function handlePasswordResetPage(){
   const email = document.getElementById('ppFgEmail').value.trim();
   const errBox = document.getElementById('ppFgError');
@@ -216,11 +219,22 @@ async function handlePasswordResetPage(){
   const btn = document.getElementById('ppFgSubmit');
   btn.disabled = true; btn.textContent = 'পাঠানো হচ্ছে...';
   try{
-    await fbAuth.sendPasswordResetEmail(email);
+    const res = await fetch('/api/send-reset-email', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email })
+    });
+    const data = await res.json().catch(() => ({}));
+    if(!res.ok){
+      errBox.textContent = data.error === 'not_configured'
+        ? 'এই ফিচারটি এখনো সেটআপ করা হয়নি — SETUP_PASSWORD_RESET.txt দেখুন।'
+        : 'কিছু একটা সমস্যা হয়েছে, আবার চেষ্টা করুন।';
+      return;
+    }
     showToast('পুনরুদ্ধারের লিঙ্ক ইমেইলে পাঠানো হয়েছে');
     showProfilePageAuthScreen('login');
   }catch(e){
-    errBox.textContent = authErrorMessageBn(e);
+    errBox.textContent = 'ইন্টারনেট সংযোগ পরীক্ষা করুন।';
   }finally{
     btn.disabled = false; btn.textContent = 'পুনরুদ্ধারের লিঙ্ক ইমেইল করুন';
   }

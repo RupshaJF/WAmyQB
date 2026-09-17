@@ -44,10 +44,51 @@
 //    খোলার সময় র‍্যান্ডম ৩টা বেছে দেখায় (aiTafsirPickPrompts) — আগে
 //    সবসময় একই ৩টা দেখাতো।
 // ============================================================
+//
+// ==== আধুনিকীকরণ পর্ব ৫ (এই আপডেট): অ্যাকাউন্ট-গেট + IndexedDB হিস্ট্রি ====
+//  · সাইন-ইন ছাড়া (অতিথি) এখন ডিভাইস-প্রতি সর্বমোট AIT_GUEST_LIMIT_DISPLAY
+//    (api/ai-tafsir.js এর GUEST_LIMIT এর সাথে মিলিয়ে রাখা) টা প্রশ্ন করা
+//    যায় — এটা দৈনিক সীমা না, একবারই; শেষ হয়ে গেলে চ্যাটের ভেতরেই একটা
+//    কার্ড দেখায় (appendAiTafsirGuestGateCard) সাইন-ইন/সাইন-আপ বাটনসহ আর
+//    ইনপুট লক করে দেয়, যতক্ষণ না সাইন-ইন হয় (রিয়েল-টাইমে আনলক হয় —
+//    js/auth.js এর refreshCurrentView থেকে aiTafsirRefreshGateForAuthChange
+//    ডাকা হয়)। আসল হিসাব সবসময় সার্ভারেই (api/ai-tafsir.js, Firestore-এ
+//    ডিভাইস-আইডি ভিত্তিক), এখানে শুধু শেষ জানা সংখ্যাটা IDBKV-তে ক্যাশ
+//    থাকে যাতে মোডাল আবার খুললে সাথে সাথেই (আরেকটা রিকোয়েস্ট ছাড়াই)
+//    লক অবস্থা দেখানো যায়।
+//  · প্রতিটা কথোপকথন এখন IndexedDB-তে (IDBKV, js/idb.js) স্বয়ংক্রিয়ভাবে
+//    সংরক্ষিত হয় — হেডারে নতুন দুইটা বাটন: "নতুন আলোচনা" আর "আগের
+//    আলোচনা" (ইতিহাস প্যানেল, সংরক্ষিত কথোপকথনের তালিকা + মুছে ফেলার
+//    অপশন)। যেকোনোটাতে ট্যাপ করলে পুরনো চ্যাট (আয়াত-প্রসঙ্গ, সব বার্তা,
+//    ডায়াগ্রামসহ) হুবহু ফিরিয়ে আনে, চালিয়ে যাওয়া যায়। সর্বোচ্চ
+//    AIT_CONV_MAX টা কথোপকথন রাখা হয়, তার বেশি হলে সবচেয়ে পুরনোটা
+//    স্বয়ংক্রিয়ভাবে মুছে যায়।
+//  · qb_ait_device_id এখন raw localStorage এর বদলে IDBKV দিয়ে
+//    পড়া/লেখা হয় (বাকি সব IndexedDB-ভিত্তিক ডেটার সাথে সামঞ্জস্যপূর্ণ
+//    রাখতে) — আগে IDBKV এর এক-বারের localStorage-migration এই একটা কী
+//    কে IndexedDB এ সরিয়ে নেওয়ার পর নিজের raw localStorage কল আবার
+//    localStorage-ই লিখতো, ফলে migration এর পরের প্রথম লোডে ডিভাইস-আইডি
+//    নিঃশব্দে বদলে যাওয়ার সুযোগ ছিল।
+//  · সেন্ড বাটন এখন প্রশ্নের উত্তর আসার সময় "থামান" বাটনে বদলে যায়
+//    (AbortController দিয়ে, ChatGPT/Claude এর প্যাটার্নের মতো) — আগে শুধু
+//    disabled স্পিনার ছিল, চাইলে মাঝপথে থামানো যেতো না।
+// ============================================================
 
-let aiTafsirHistory = [];        // [{role:'user'|'model', parts:[{text}]}, ...] — চলতি চ্যাটের সব টার্ন
+let aiTafsirHistory = [];        // [{role:'user'|'model', parts:[{text}]}, ...] — Gemini-payload ফরম্যাট, শুধু এই চলতি সেশনের প্রসঙ্গের জন্য
+let aiTafsirMessages = [];       // [{role, text, diagram}, ...] — পূর্ণাঙ্গ রেকর্ড (diagram সহ), IndexedDB-তে সংরক্ষণ ও পুরনো চ্যাট রিপ্লে করতে ব্যবহৃত
 let aiTafsirCurrentAyah = null;  // {surahBn, ayahNum, arabic, translation} অথবা null (general mode)
+let aiTafsirCurrentConvId = null;  // চলতি কথোপকথনের সংরক্ষিত আইডি — প্রথম বার্তা পাঠানোর পরেই সেট হয়, তার আগে null
+let aiTafsirConvCreatedAt = null;  // চলতি কথোপকথন প্রথম কবে তৈরি হয়েছিল (persist এর সময় বসে)
+let aiTafsirGateActive = false;    // true হলে অতিথি-সীমা শেষ, ইনপুট লক
+let aiTafsirAbortController = null; // চলতি in-flight রিকোয়েস্ট থামানোর জন্য (সেন্ড বাটন "থামান" মোডে থাকলে)
 let aiTafsirBusy = false;
+
+// ---------- কথোপকথন-পার্সিস্টেন্স + অতিথি-সীমা ক্যাশ — IDBKV কী ----------
+const AIT_CONV_INDEX_KEY = 'qb_ait_conversations';   // JSON array — সব সংরক্ষিত কথোপকথনের সারসংক্ষেপ {id,title,isAyah,msgCount,createdAt,updatedAt}
+const AIT_CONV_PREFIX = 'qb_ait_conv_';              // + id -> একটা কথোপকথনের পূর্ণাঙ্গ JSON {id,ayahCtx,messages,createdAt,updatedAt}
+const AIT_CONV_MAX = 40;                             // এর বেশি কথোপকথন জমলে সবচেয়ে পুরনোটা স্বয়ংক্রিয়ভাবে মুছে যায়
+const AIT_GUEST_REMAINING_KEY = 'qb_ait_guest_remaining'; // সার্ভার থেকে সর্বশেষ জানা "অতিথি হিসেবে বাকি প্রশ্ন" সংখ্যার ক্যাশ
+const AIT_GUEST_LIMIT_DISPLAY = 2;                   // শুধু UI-তে শুরুতেই দেখানোর জন্য — api/ai-tafsir.js এর GUEST_LIMIT এর সাথে মিলিয়ে রাখা
 
 // প্রতিবার মোডাল খোলার সময় এই পুল থেকে র‍্যান্ডম ৩টা বেছে দেখানো হয়
 // (aiTafsirPickPrompts) — তাই শুরুর চিপগুলোও বারবার একই থাকে না।
@@ -126,11 +167,18 @@ const AIT_MAX_CHARS = 2000;          // api/ai-tafsir.js এর question.slice(0
 const AIT_COUNTER_THRESHOLD = 1800;  // এর নিচে কাউন্টার লুকানো থাকে, অহেতুক জায়গা নেয় না
 const AIT_TEXTAREA_MAX_H = 120;      // css/ai-tafsir.css এর textarea max-height এর সাথে মিলিয়ে রাখা
 
+// IDBKV (js/idb.js) দিয়ে সংরক্ষিত — বাকি অ্যাপের সব IndexedDB-ভিত্তিক ডেটার
+// সাথে সামঞ্জস্যপূর্ণ রাখতে। IDBKV কোনো কারণে লোড না হলে (স্ক্রিপ্ট-অর্ডার
+// সমস্যা) সরাসরি localStorage এ ফলব্যাক করে, যাতে ফিচারটা কখনো ভেঙে না পড়ে।
 function aiTafsirDeviceId(){
-  let id = localStorage.getItem('qb_ait_device_id');
+  const store = (typeof IDBKV !== 'undefined' && IDBKV.isReady) ? IDBKV : null;
+  let id = store ? store.get('qb_ait_device_id') : (function(){ try{ return localStorage.getItem('qb_ait_device_id'); }catch(e){ return null; } })();
   if(!id){
     id = 'dev_' + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    try{ localStorage.setItem('qb_ait_device_id', id); }catch(e){}
+    try{
+      if(store) store.set('qb_ait_device_id', id);
+      else localStorage.setItem('qb_ait_device_id', id);
+    }catch(e){}
   }
   return id;
 }
@@ -143,6 +191,242 @@ async function aiTafsirAuthPayload(){
     }
   }catch(e){ /* সাইন-ইন থাকলেও token আনতে ব্যর্থ হলে নিচে anonymous fallback */ }
   return { deviceId: aiTafsirDeviceId() };
+}
+
+function aiTafsirIsSignedIn(){
+  return typeof fbAuth !== 'undefined' && !!fbAuth && !!fbAuth.currentUser;
+}
+
+// ---------- কথোপকথন পার্সিস্টেন্স (IndexedDB, IDBKV এর মাধ্যমে) ----------
+// প্রতিটা কথোপকথন দুই জায়গায় সংরক্ষিত হয়: (১) AIT_CONV_INDEX_KEY এ একটা
+// হালকা সারসংক্ষেপ-তালিকা (হিস্ট্রি প্যানেলে দ্রুত রেন্ডার করতে, পুরো
+// মেসেজ-বডি ছাড়াই), আর (২) AIT_CONV_PREFIX+id এ পূর্ণাঙ্গ বার্তা-সহ
+// অবজেক্ট (কথোপকথন আবার খুললে রিপ্লে করতে)।
+function aiTafsirGenId(){
+  return 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+}
+
+function aiTafsirLoadConvIndex(){
+  try{
+    const raw = IDBKV.get(AIT_CONV_INDEX_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  }catch(e){ return []; }
+}
+
+function aiTafsirSaveConvIndex(list){
+  try{ IDBKV.set(AIT_CONV_INDEX_KEY, JSON.stringify(list)); }catch(e){}
+}
+
+// প্রথম ইউজার-প্রশ্ন (বা আয়াত-প্রসঙ্গ থাকলে সূরা/আয়াত) থেকে একটা ছোট
+// শিরোনাম বানায় — হিস্ট্রি প্যানেলের তালিকায় দেখানোর জন্য।
+function aiTafsirDeriveTitle(){
+  if(aiTafsirCurrentAyah){
+    return `${aiTafsirCurrentAyah.surahBn || ''} · আয়াত ${toBn(aiTafsirCurrentAyah.ayahNum || '')}`;
+  }
+  const firstUser = aiTafsirMessages.find(m => m.role === 'user');
+  if(firstUser && firstUser.text) return firstUser.text.slice(0, 60);
+  return 'নতুন আলোচনা';
+}
+
+// প্রতিটা সফল প্রশ্নোত্তরের পরে (sendAiTafsirQuestion থেকে) ডাকা হয় —
+// চলতি পুরো কথোপকথন IndexedDB এ সংরক্ষণ/আপডেট করে। খালি কথোপকথন (কোনো
+// বার্তা এখনো পাঠানো হয়নি) কখনো সংরক্ষিত হয় না।
+function aiTafsirPersistConversation(){
+  if(!aiTafsirMessages.length || typeof IDBKV === 'undefined') return;
+  const now = Date.now();
+  if(!aiTafsirCurrentConvId) aiTafsirCurrentConvId = aiTafsirGenId();
+  if(!aiTafsirConvCreatedAt) aiTafsirConvCreatedAt = now;
+
+  const record = {
+    id: aiTafsirCurrentConvId,
+    ayahCtx: aiTafsirCurrentAyah,
+    messages: aiTafsirMessages,
+    createdAt: aiTafsirConvCreatedAt,
+    updatedAt: now
+  };
+  try{ IDBKV.set(AIT_CONV_PREFIX + aiTafsirCurrentConvId, JSON.stringify(record)); }catch(e){ return; }
+
+  let list = aiTafsirLoadConvIndex().filter(c => c.id !== aiTafsirCurrentConvId);
+  list.unshift({
+    id: aiTafsirCurrentConvId,
+    title: aiTafsirDeriveTitle(),
+    isAyah: !!aiTafsirCurrentAyah,
+    msgCount: aiTafsirMessages.length,
+    createdAt: record.createdAt,
+    updatedAt: now
+  });
+  // সীমাহীন বৃদ্ধি ঠেকাতে সবচেয়ে পুরনো কথোপকথন(গুলো) স্বয়ংক্রিয়ভাবে ছাঁটাই
+  if(list.length > AIT_CONV_MAX){
+    list.slice(AIT_CONV_MAX).forEach(c => { try{ IDBKV.remove(AIT_CONV_PREFIX + c.id); }catch(e){} });
+    list = list.slice(0, AIT_CONV_MAX);
+  }
+  aiTafsirSaveConvIndex(list);
+}
+
+function aiTafsirDeleteConversation(id){
+  aiTafsirSaveConvIndex(aiTafsirLoadConvIndex().filter(c => c.id !== id));
+  try{ IDBKV.remove(AIT_CONV_PREFIX + id); }catch(e){}
+  if(aiTafsirCurrentConvId === id){ aiTafsirCurrentConvId = null; aiTafsirConvCreatedAt = null; } // চলতি চ্যাটই মুছে ফেললে পরের সেভ নতুন আইডি নেবে
+  renderAiTafsirHistoryPanel();
+}
+
+// সংরক্ষিত একটা কথোপকথন খুলে চ্যাট এরিয়ায় হুবহু রিপ্লে করে (ডায়াগ্রামসহ),
+// চালিয়ে যাওয়ার জন্য প্রস্তুত অবস্থায়।
+function aiTafsirOpenConversation(id){
+  let record;
+  try{
+    const raw = IDBKV.get(AIT_CONV_PREFIX + id);
+    if(!raw) return;
+    record = JSON.parse(raw);
+  }catch(e){ return; }
+
+  aiTafsirCurrentConvId = record.id;
+  aiTafsirConvCreatedAt = record.createdAt || Date.now();
+  aiTafsirCurrentAyah = record.ayahCtx || null;
+  aiTafsirMessages = Array.isArray(record.messages) ? record.messages : [];
+  aiTafsirHistory = aiTafsirMessages.map(m => ({ role: m.role, parts: [{ text: m.text || '' }] }));
+
+  const body = document.getElementById('aiTafsirChat');
+  if(body) body.innerHTML = '';
+  aiTafsirRenderCtxHead(aiTafsirCurrentAyah, { collapsed: true }); // পুরনো চ্যাট খুললে সরাসরি ভাঁজ করা অবস্থায়, চ্যাটের জন্য জায়গা রেখে
+  aiTafsirMessages.forEach(m => appendAiTafsirBubble(m.role, m.text || '', false, m.diagram || null));
+  renderAiTafsirChips([]); // পুরনো চ্যাট চালিয়ে যাওয়ার সময় শুরুর/আগের ফলো-আপ চিপ আর প্রাসঙ্গিক না
+  aiTafsirToggleHistoryPanel(false);
+  aiTafsirRefreshGuestGateUI();
+
+  const input = document.getElementById('aiTafsirInput');
+  if(input){ input.value = ''; aiTafsirResizeInput(); aiTafsirUpdateCharCount(); input.focus(); }
+}
+
+function aiTafsirRelativeTime(ts){
+  const diffMin = Math.round((Date.now() - ts) / 60000);
+  if(diffMin < 1) return 'এইমাত্র';
+  if(diffMin < 60) return `${toBn(diffMin)} মিনিট আগে`;
+  const diffHr = Math.round(diffMin / 60);
+  if(diffHr < 24) return `${toBn(diffHr)} ঘণ্টা আগে`;
+  const diffDay = Math.round(diffHr / 24);
+  if(diffDay < 30) return `${toBn(diffDay)} দিন আগে`;
+  try{ return new Date(ts).toLocaleDateString('bn-BD', { day: 'numeric', month: 'short' }); }
+  catch(e){ return new Date(ts).toLocaleDateString(); }
+}
+
+function renderAiTafsirHistoryPanel(){
+  const listEl = document.getElementById('aiTafsirHistoryList');
+  if(!listEl) return;
+  const list = aiTafsirLoadConvIndex();
+  if(!list.length){
+    listEl.innerHTML = '<div class="ait-history-empty"><i class="fa-regular fa-comments" aria-hidden="true"></i><p>এখনো কোনো আলোচনা সংরক্ষিত হয়নি — একটা প্রশ্ন করলেই এখানে জমা হবে।</p></div>';
+    return;
+  }
+  listEl.innerHTML = list.map(c => `
+    <div class="ait-history-item${c.id === aiTafsirCurrentConvId ? ' ait-history-item-active' : ''}" data-id="${escapeHtml(c.id)}">
+      <div class="ait-history-item-main">
+        <div class="ait-history-item-title">${c.isAyah ? '<i class="fa-solid fa-bookmark" aria-hidden="true"></i> ' : ''}${escapeHtml(c.title || 'আলোচনা')}</div>
+        <div class="ait-history-item-meta">${aiTafsirRelativeTime(c.updatedAt)} · ${toBn(c.msgCount || 0)}টি বার্তা</div>
+      </div>
+      <button type="button" class="ait-history-item-delete" data-del="${escapeHtml(c.id)}" aria-label="এই আলোচনা মুছে ফেলুন"><i class="fa-regular fa-trash-can" aria-hidden="true"></i></button>
+    </div>`).join('');
+
+  listEl.querySelectorAll('.ait-history-item').forEach(el => {
+    el.onclick = (e) => { if(!e.target.closest('[data-del]')) aiTafsirOpenConversation(el.getAttribute('data-id')); };
+  });
+  listEl.querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = (e) => { e.stopPropagation(); aiTafsirDeleteConversation(btn.getAttribute('data-del')); };
+  });
+}
+
+function aiTafsirToggleHistoryPanel(show){
+  const panel = document.getElementById('aiTafsirHistoryPanel');
+  if(!panel) return;
+  const willShow = show !== undefined ? show : (panel.style.display === 'none' || !panel.style.display);
+  if(willShow) renderAiTafsirHistoryPanel();
+  panel.style.display = willShow ? 'flex' : 'none';
+}
+
+// ---------- অতিথি-সীমা গেট ----------
+// আসল হিসাব সবসময় সার্ভারে (api/ai-tafsir.js, Firestore); এখানে শুধু সর্বশেষ
+// জানা "বাকি প্রশ্ন" সংখ্যাটা ক্যাশ থাকে যাতে মোডাল খোলা/পুরনো চ্যাটে
+// যাওয়ার সাথে সাথেই (নেটওয়ার্ক রাউন্ড-ট্রিপ ছাড়াই) সঠিক লক-অবস্থা দেখানো যায়।
+function aiTafsirGuestRemainingCached(){
+  try{
+    const raw = IDBKV.get(AIT_GUEST_REMAINING_KEY);
+    if(raw === null || raw === undefined) return null;
+    const n = parseInt(raw, 10);
+    return Number.isNaN(n) ? null : n;
+  }catch(e){ return null; }
+}
+
+function aiTafsirSetInputLocked(locked, hintHtml){
+  const input = document.getElementById('aiTafsirInput');
+  const sendBtn = document.getElementById('aiTafsirSend');
+  const remaining = document.getElementById('aiTafsirRemaining');
+  if(input){ input.disabled = locked; input.placeholder = locked ? 'সাইন ইন করে চালিয়ে যান...' : 'আপনার প্রশ্ন লিখুন...'; }
+  if(sendBtn) sendBtn.disabled = locked;
+  if(remaining && hintHtml !== undefined) remaining.innerHTML = hintHtml;
+}
+
+// modal খোলার সময়, পুরনো কথোপকথনে যাওয়ার সময়, আর সাইন-ইন/আউট হওয়ার সময়
+// (js/auth.js এর refreshCurrentView থেকে) ডাকা হয় — চলতি অ্যাকাউন্ট-অবস্থা
+// অনুযায়ী ইনপুট লক/আনলক আর ফুটারের হিন্ট-টেক্সট ঠিক করে।
+function aiTafsirRefreshGuestGateUI(){
+  if(aiTafsirIsSignedIn()){
+    aiTafsirGateActive = false;
+    aiTafsirSetInputLocked(false, '');
+    return;
+  }
+  const remaining = aiTafsirGuestRemainingCached();
+  if(remaining !== null && remaining <= 0){
+    aiTafsirActivateGuestGate(false); // false = নতুন কার্ড না জুড়ে শুধু ইনপুট লক — কার্ডটা শুধু লাইভ ফ্লোতেই (সীমা শেষ হওয়ার মুহূর্তে) দেখানো হয়
+  } else {
+    aiTafsirGateActive = false;
+    const hint = `<i class="fa-solid fa-user" aria-hidden="true"></i> অতিথি হিসেবে ${remaining !== null ? toBn(remaining) : toBn(AIT_GUEST_LIMIT_DISPLAY)}টি প্রশ্ন করা যাবে — সাইন ইন করলে আরও বেশি`;
+    aiTafsirSetInputLocked(false, hint);
+  }
+}
+
+// appendCard=true হলে (সীমা শেষ হওয়ার লাইভ মুহূর্তে) চ্যাটের ভেতরে একটা
+// সাইন-ইন CTA কার্ডও জোড়া হয়; false হলে (মোডাল/পুরনো-চ্যাট খোলার সময়) শুধু
+// ইনপুট লক করা হয়, প্রতিবার আরেকটা কার্ড দিয়ে চ্যাট ভরিয়ে ফেলা হয় না।
+function aiTafsirActivateGuestGate(appendCard){
+  aiTafsirGateActive = true;
+  aiTafsirSetInputLocked(true, '<i class="fa-solid fa-lock" aria-hidden="true"></i> অতিথি হিসেবে প্রশ্নের সুযোগ শেষ হয়েছে');
+  if(appendCard && !document.getElementById('aiTafsirGateCard')) appendAiTafsirGuestGateCard();
+}
+
+function appendAiTafsirGuestGateCard(){
+  const body = document.getElementById('aiTafsirChat');
+  if(!body) return;
+  const row = document.createElement('div');
+  row.className = 'ait-msg ait-msg-model';
+  row.appendChild(aiTafsirAvatarEl());
+  const col = document.createElement('div');
+  col.className = 'ait-msg-col';
+  const card = document.createElement('div');
+  card.className = 'ait-gate-card';
+  card.id = 'aiTafsirGateCard';
+  card.innerHTML = `
+    <p>অতিথি হিসেবে ${toBn(AIT_GUEST_LIMIT_DISPLAY)}টি প্রশ্নের সুযোগ শেষ হয়েছে। বিনামূল্যে চালিয়ে যেতে সাইন ইন করুন বা নতুন অ্যাকাউন্ট খুলুন।</p>
+    <button type="button" class="ait-gate-btn" id="aiTafsirGateSignin">সাইন ইন / সাইন আপ করুন</button>
+  `;
+  col.appendChild(card);
+  row.appendChild(col);
+  body.appendChild(row);
+  aiTafsirScrollToRow(row, 'model');
+  const btn = document.getElementById('aiTafsirGateSignin');
+  if(btn) btn.onclick = () => { if(typeof openAuthFlow === 'function') openAuthFlow('choice'); };
+}
+
+// js/auth.js এর refreshCurrentView() থেকে ডাকা হয় (AI তাফসীর মোডাল খোলা
+// থাকলে) — সাইন-ইন হয়ে গেলে গেট-কার্ড সরিয়ে ইনপুট সাথে সাথেই আনলক করে,
+// মোডাল বন্ধ-খোলা করার দরকার হয় না।
+function aiTafsirRefreshGateForAuthChange(){
+  aiTafsirRefreshGuestGateUI();
+  if(aiTafsirIsSignedIn()){
+    const card = document.getElementById('aiTafsirGateCard');
+    const row = card && card.closest('.ait-msg');
+    if(row) row.remove();
+  }
 }
 
 // ---------- হালকা মার্কডাউন → HTML (pure JS, কোনো লাইব্রেরি নেই) ----------
@@ -225,9 +509,49 @@ function aiTafsirCopyBtn(rawText){
 }
 
 // ayahCtx দিলে সেই আয়াত-প্রসঙ্গে খোলে, null দিলে সাধারণ প্রশ্নোত্তর মোডে।
+// আয়াত-প্রসঙ্গ হেডার বসায় — openAiTafsirModal (নতুন চ্যাট) আর
+// aiTafsirOpenConversation (পুরনো চ্যাট রিপ্লে) দুই জায়গা থেকেই ডাকা হয়,
+// তাই একই মার্কআপ/টগল-লজিক দুইবার লেখা লাগে না। opts.collapsed:true হলে
+// শুরুতেই ভাঁজ করা অবস্থায় বসে (পুরনো চ্যাট খোলার সময় চ্যাটের জন্য জায়গা
+// রাখতে) — নতুন চ্যাটে (openAiTafsirModal) ডিফল্ট খোলা অবস্থায় থাকে, প্রথম
+// প্রশ্ন পাঠানোর সাথে সাথে aiTafsirAutoCollapseCtx() আলাদাভাবে ভাঁজ করে।
+function aiTafsirRenderCtxHead(ayahCtx, opts){
+  const head = document.getElementById('aiTafsirHeadCtx');
+  if(!head) return;
+  if(!ayahCtx){ head.style.display = 'none'; head.innerHTML = ''; return; }
+
+  const collapsed = !!(opts && opts.collapsed);
+  head.style.display = 'block';
+  head.classList.toggle('ait-ctx-collapsed', collapsed);
+  head.innerHTML = `
+    <div class="ait-ctx-top">
+      <div class="ait-ctx-surah">${escapeHtml(ayahCtx.surahBn || '')} · আয়াত ${toBn(ayahCtx.ayahNum || '')}</div>
+      <button type="button" class="ait-ctx-toggle" id="aiTafsirCtxToggle" aria-label="আয়াত দেখান/আড়াল করুন" aria-expanded="${collapsed ? 'false' : 'true'}"><i class="fa-solid fa-chevron-up"></i></button>
+    </div>
+    <div class="ait-ctx-body">
+      <div class="ait-ctx-body-inner">
+        <div class="ait-ctx-ar">${ayahCtx.arabic || ''}</div>
+        ${ayahCtx.translation ? `<div class="ait-ctx-tr">${escapeHtml(ayahCtx.translation)}</div>` : ''}
+      </div>
+    </div>`;
+  const ctxToggle = document.getElementById('aiTafsirCtxToggle');
+  if(ctxToggle){
+    ctxToggle.onclick = () => {
+      const nowCollapsed = head.classList.toggle('ait-ctx-collapsed');
+      ctxToggle.setAttribute('aria-expanded', String(!nowCollapsed));
+    };
+  }
+}
+
+// ayahCtx দিলে সেই আয়াত-প্রসঙ্গে খোলে, null দিলে সাধারণ প্রশ্নোত্তর মোডে —
+// সবসময় একটা টাটকা/খালি কথোপকথন দিয়ে শুরু হয় (পুরনো চালিয়ে যেতে
+// হিস্ট্রি প্যানেল থেকে aiTafsirOpenConversation ব্যবহার করুন)।
 function openAiTafsirModal(ayahCtx){
   aiTafsirCurrentAyah = ayahCtx || null;
   aiTafsirHistory = [];
+  aiTafsirMessages = [];
+  aiTafsirCurrentConvId = null;
+  aiTafsirConvCreatedAt = null;
 
   const head = document.getElementById('aiTafsirHeadCtx');
   const chips = document.getElementById('aiTafsirChips');
@@ -236,43 +560,23 @@ function openAiTafsirModal(ayahCtx){
   if(!head || !chips || !body || !input) return;
 
   body.innerHTML = '';
+  aiTafsirToggleHistoryPanel(false);
   input.value = '';
   aiTafsirResizeInput();
   aiTafsirUpdateCharCount();
 
-  if(ayahCtx){
-    head.style.display = 'block';
-    head.classList.remove('ait-ctx-collapsed');
-    head.innerHTML = `
-      <div class="ait-ctx-top">
-        <div class="ait-ctx-surah">${escapeHtml(ayahCtx.surahBn || '')} · আয়াত ${toBn(ayahCtx.ayahNum || '')}</div>
-        <button type="button" class="ait-ctx-toggle" id="aiTafsirCtxToggle" aria-label="আয়াত দেখান/আড়াল করুন" aria-expanded="true"><i class="fa-solid fa-chevron-up"></i></button>
-      </div>
-      <div class="ait-ctx-body">
-        <div class="ait-ctx-body-inner">
-          <div class="ait-ctx-ar">${ayahCtx.arabic || ''}</div>
-          ${ayahCtx.translation ? `<div class="ait-ctx-tr">${escapeHtml(ayahCtx.translation)}</div>` : ''}
-        </div>
-      </div>`;
-    const ctxToggle = document.getElementById('aiTafsirCtxToggle');
-    if(ctxToggle){
-      ctxToggle.onclick = () => {
-        const collapsed = head.classList.toggle('ait-ctx-collapsed');
-        ctxToggle.setAttribute('aria-expanded', String(!collapsed));
-      };
-    }
-    renderAiTafsirChips(aiTafsirPickPrompts(AI_TAFSIR_AYAH_PROMPTS), { dynamic: false });
-  } else {
-    head.style.display = 'none';
-    head.innerHTML = '';
-    renderAiTafsirChips(aiTafsirPickPrompts(AI_TAFSIR_GENERAL_PROMPTS), { dynamic: false });
-  }
+  aiTafsirRenderCtxHead(ayahCtx);
+  renderAiTafsirChips(
+    aiTafsirPickPrompts(ayahCtx ? AI_TAFSIR_AYAH_PROMPTS : AI_TAFSIR_GENERAL_PROMPTS),
+    { dynamic: false }
+  );
 
   appendAiTafsirBubble('model', ayahCtx
     ? 'এই আয়াত নিয়ে যা জানতে চান জিজ্ঞাসা করুন। নিচের সাজেশনগুলো থেকেও বেছে নিতে পারেন।'
     : 'ইসলাম বা কুরআন নিয়ে যেকোনো প্রশ্ন করুন। কোনো নির্দিষ্ট আয়াতের ব্যাখ্যা জানতে চাইলে রিডারে সেই আয়াতের নিচের "AI তাফসীর" বাটন থেকে জিজ্ঞাসা করলে আরও নির্ভুল উত্তর পাবেন।'
   );
 
+  aiTafsirRefreshGuestGateUI();
   openModal('aiTafsirModal');
   input.focus();
 }
@@ -380,19 +684,32 @@ function aiTafsirUpdateCharCount(){
   }
 }
 
+// loading=true হলে সেন্ড বাটন একটা "থামান" বাটনে বদলে যায় (নিচে
+// aiTafsirHandleSendClick দেখুন) — তাই disabled রাখা হয় না, শুধু আইকন/
+// aria-label বদলায়।
 function aiTafsirSetSendLoading(loading){
   const btn = document.getElementById('aiTafsirSend');
   if(!btn) return;
   btn.classList.toggle('ait-send-loading', loading);
+  btn.setAttribute('aria-label', loading ? 'থামান' : 'পাঠান');
   btn.innerHTML = loading
-    ? '<i class="fa-solid fa-circle-notch fa-spin"></i>'
+    ? '<i class="fa-solid fa-stop"></i>'
     : '<i class="fa-solid fa-paper-plane"></i>';
 }
 
+// সেন্ড বাটনে ক্লিক এখন দুই কাজ করতে পারে অবস্থাভেদে: ব্যস্ত না থাকলে প্রশ্ন
+// পাঠায়, ব্যস্ত থাকলে (উত্তর আসছে) চলতি রিকোয়েস্ট থামিয়ে দেয়।
+function aiTafsirHandleSendClick(){
+  if(aiTafsirBusy){
+    if(aiTafsirAbortController) aiTafsirAbortController.abort();
+    return;
+  }
+  sendAiTafsirQuestion();
+}
+
 async function sendAiTafsirQuestion(){
-  if(aiTafsirBusy) return;
+  if(aiTafsirBusy || aiTafsirGateActive) return;
   const inputEl = document.getElementById('aiTafsirInput');
-  const sendBtn = document.getElementById('aiTafsirSend');
   if(!inputEl) return;
   const question = inputEl.value.trim();
   if(!question) return;
@@ -410,11 +727,12 @@ async function sendAiTafsirQuestion(){
   aiTafsirUpdateCharCount();
   appendAiTafsirBubble('user', question);
   aiTafsirHistory.push({ role: 'user', parts: [{ text: question }] });
+  aiTafsirMessages.push({ role: 'user', text: question });
 
   aiTafsirBusy = true;
-  if(sendBtn){ sendBtn.disabled = true; }
-  aiTafsirSetSendLoading(true);
+  aiTafsirSetSendLoading(true); // সেন্ড বাটন এখনও enabled — busy অবস্থায় "থামান" হিসেবে কাজ করে
   const typingEl = appendAiTafsirTyping();
+  aiTafsirAbortController = (typeof AbortController !== 'undefined') ? new AbortController() : null;
 
   try{
     const authPart = await aiTafsirAuthPayload();
@@ -426,14 +744,19 @@ async function sendAiTafsirQuestion(){
         history: aiTafsirHistory.slice(0, -1),
         ayahContext: aiTafsirCurrentAyah,
         ...authPart
-      })
+      }),
+      signal: aiTafsirAbortController ? aiTafsirAbortController.signal : undefined
     });
     const data = await res.json().catch(() => ({}));
     if(typingEl) typingEl.remove();
 
     if(!res.ok){
       aiTafsirHistory.pop();
-      if(data.error === 'rate_limited'){
+      aiTafsirMessages.pop();
+      if(data.error === 'guest_limit_reached'){
+        try{ IDBKV.set(AIT_GUEST_REMAINING_KEY, '0'); }catch(e){}
+        aiTafsirActivateGuestGate(true);
+      } else if(data.error === 'rate_limited'){
         appendAiTafsirBubble('model', 'আজকের জন্য প্রশ্নের সীমা শেষ হয়ে গেছে 🙏 আগামীকাল আবার চেষ্টা করুন।', true);
       } else if(data.error === 'not_configured'){
         appendAiTafsirBubble('model', 'এই ফিচারটি এখনো সেটআপ করা হয়নি। SETUP_AI_TAFSIR.txt ফাইলটি অনুসরণ করুন।', true);
@@ -445,18 +768,33 @@ async function sendAiTafsirQuestion(){
 
     appendAiTafsirBubble('model', data.answer || '', false, data.diagram || null);
     aiTafsirHistory.push({ role: 'model', parts: [{ text: data.answer || '' }] });
+    aiTafsirMessages.push({ role: 'model', text: data.answer || '', diagram: data.diagram || null });
+    aiTafsirPersistConversation();
     renderAiTafsirChips(Array.isArray(data.suggestions) ? data.suggestions : [], { dynamic: true });
+
     if(typeof data.remainingToday === 'number'){
       const counter = document.getElementById('aiTafsirRemaining');
       if(counter) counter.innerHTML = `<i class="fa-solid fa-hourglass-half"></i> আজ আর ${toBn(data.remainingToday)}টি প্রশ্ন করা যাবে`;
+    } else if(typeof data.remainingGuestMessages === 'number'){
+      try{ IDBKV.set(AIT_GUEST_REMAINING_KEY, String(data.remainingGuestMessages)); }catch(e){}
+      if(data.remainingGuestMessages <= 0) aiTafsirActivateGuestGate(true); // এই বার্তার পরই সীমা শেষ — পরের চেষ্টার আগেই গেট দেখিয়ে দেওয়া হয়
+      else{
+        const counter = document.getElementById('aiTafsirRemaining');
+        if(counter) counter.innerHTML = `<i class="fa-solid fa-user"></i> অতিথি হিসেবে আর ${toBn(data.remainingGuestMessages)}টি প্রশ্ন করা যাবে`;
+      }
     }
   }catch(e){
     if(typingEl) typingEl.remove();
     aiTafsirHistory.pop();
-    appendAiTafsirBubble('model', 'ইন্টারনেট সংযোগ পরীক্ষা করুন।', true);
+    aiTafsirMessages.pop();
+    appendAiTafsirBubble('model', (e && e.name === 'AbortError') ? 'প্রশ্নটি থামানো হয়েছে।' : 'ইন্টারনেট সংযোগ পরীক্ষা করুন।', true);
   }finally{
     aiTafsirBusy = false;
-    if(sendBtn){ sendBtn.disabled = false; }
+    aiTafsirAbortController = null;
+    // sendBtn.disabled ইচ্ছাকৃতভাবে এখানে ছোঁয়া হয় না — সেটা এখন শুধু
+    // অতিথি-গেটের (aiTafsirSetInputLocked) দখলে; উত্তর আসতে আসতেই যদি গেট
+    // সক্রিয় হয়ে যায় (guest_limit_reached), এখানে আবার enable করে দিলে
+    // সেই লক ভেঙে যেতো।
     aiTafsirSetSendLoading(false);
   }
 }
@@ -465,6 +803,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const sendBtn = document.getElementById('aiTafsirSend');
   const inputEl = document.getElementById('aiTafsirInput');
   const closeBtn = document.getElementById('aiTafsirClose');
+  const newChatBtn = document.getElementById('aiTafsirNewChat');
+  const historyBtn = document.getElementById('aiTafsirHistoryBtn');
+  const historyCloseBtn = document.getElementById('aiTafsirHistoryClose');
   const chatEl = document.getElementById('aiTafsirChat');
 
   if(chatEl){
@@ -502,7 +843,12 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  if(sendBtn) sendBtn.onclick = sendAiTafsirQuestion;
+  if(sendBtn) sendBtn.onclick = aiTafsirHandleSendClick;
   if(closeBtn) closeBtn.onclick = () => closeModal('aiTafsirModal');
+  // নতুন আলোচনা: চলতি মোড (আয়াত-প্রসঙ্গ থাকলে সেটা রেখেই, নাহলে সাধারণ)
+  // অক্ষুণ্ণ রেখে একদম টাটকা চ্যাট শুরু করে।
+  if(newChatBtn) newChatBtn.onclick = () => openAiTafsirModal(aiTafsirCurrentAyah);
+  if(historyBtn) historyBtn.onclick = () => aiTafsirToggleHistoryPanel();
+  if(historyCloseBtn) historyCloseBtn.onclick = () => aiTafsirToggleHistoryPanel(false);
   if(typeof wireModalBackdrop === 'function') wireModalBackdrop('aiTafsirModal');
 });
