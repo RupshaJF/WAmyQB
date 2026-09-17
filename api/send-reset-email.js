@@ -100,7 +100,7 @@ module.exports = async (req, res) => {
     // মানে লিংক সরাসরি এই URL এ (?mode=resetPassword&oobCode=... সহ) নিয়ে
     // আসে — js/reset-password.js ঠিক এই ফরম্যাটটাই আশা করে।
     const actionCodeSettings = {
-      url: 'https://quranview.vercel.app/index.html',
+      url: 'https://quranbangla.vercel.app/index.html',
       handleCodeInApp: true,
     };
 
