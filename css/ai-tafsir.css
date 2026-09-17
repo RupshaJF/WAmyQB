@@ -65,7 +65,15 @@
    শ্যাডো ছাড়াই। শুধু এই একটা মোডালেই স্কোপ করা (#aiTafsirModal সিলেক্টর
    দিয়ে) — Settings/Prayer/Dictionary ইত্যাদি বাকি সব মোডাল css/modals.css
    এর সাধারণ ভাসমান-কার্ড স্টাইলেই থাকে, অপরিবর্তিত। সাজেস্টেড-প্রশ্ন চিপও
-   এখন ছোট (কম প্যাডিং/ফন্ট-সাইজ), যাতে বেশি পরিষ্কার আর কম ভারী লাগে। */
+   এখন ছোট (কম প্যাডিং/ফন্ট-সাইজ), যাতে বেশি পরিষ্কার আর কম ভারী লাগে।
+
+   ==== আধুনিকীকরণ পর্ব ৫ (এই আপডেট) — হেডার-অ্যাকশন + ইতিহাস + গেট ====
+   হেডারে দুইটা নতুন flat আইকন-বাটন (.ait-head-btn — "নতুন আলোচনা"/"আগের
+   আলোচনা"), একটা ইতিহাস-প্যানেল (.ait-history-panel, সংরক্ষিত কথোপকথনের
+   তালিকা) আর অতিথি-সীমা শেষ হলে দেখানোর একটা গেট-কার্ড (.ait-gate-card,
+   .ait-ctx এর মতোই গোল্ড-অ্যাকসেন্ট বর্ডার) — বিস্তারিত js/ai-tafsir.js এর
+   নিজস্ব চেঞ্জলগে। সব ফাইলের নিচের দিকে, কোনো নতুন blur/glow/gradient
+   ছাড়াই। */
 
 .ait-box{
   max-width:560px;
@@ -255,7 +263,10 @@
 .ait-send-btn:disabled{opacity:.5;cursor:default;}
 .ait-send-btn:not(:disabled):hover{background:var(--gold-soft);}
 .ait-send-btn:not(:disabled):active{transform:scale(.92);}
-.ait-send-btn.ait-send-loading{opacity:.85;cursor:wait;}
+/* .ait-send-loading এখন একটা কার্যকর "থামান" বাটন (busy অবস্থায় disabled
+   না, ক্লিক করলে AbortController দিয়ে থামায়) — তাই cursor:wait না,
+   cursor:pointer, যাতে ক্লিকযোগ্য মনে হয়। */
+.ait-send-btn.ait-send-loading{opacity:.85;}
 
 /* ---- ফুটার: বাকি প্রশ্ন-সংখ্যা + ডিসক্লেইমার ---- */
 .ait-footer{padding:7px 18px 12px;flex-shrink:0;}
@@ -266,6 +277,101 @@
 @media (max-width:480px){
   .ait-msg-col{max-width:87%;}
   .ait-ctx-ar{font-size:17px;}
+}
+
+/* ==== আধুনিকীকরণ পর্ব ৫ (এই আপডেট) — হেডার-অ্যাকশন + ইতিহাস প্যানেল +
+   অতিথি-সীমা গেট (js/ai-tafsir.js) — এখানেও কোনো blur/glow নেই, সব solid
+   fill + বিদ্যমান রঙ-ভ্যারিয়েবল, বাকি ফাইলের ভিজ্যুয়াল ভাষার সাথে মিলিয়ে। ==== */
+
+/* ---- হেডারে "নতুন আলোচনা" + "আগের আলোচনা" বাটন — .app-modal-back
+   (css/modals.css) এর ঠিক একই flat আইকন-বাটন স্টাইল পুনর্ব্যবহার করা হয়েছে,
+   শুধু মোডাল-ক্লোজের পাশে ছোট্ট একটা গ্রুপ হিসেবে বসাতে র‍্যাপ করা। ---- */
+.ait-head-actions{display:flex;align-items:center;gap:2px;flex-shrink:0;}
+.ait-head-btn{width:30px;height:30px;font-size:13px;}
+
+/* ---- ইতিহাস প্যানেল — .ait-chat এর ঠিক উপরে (একই .ait-chat-wrap
+   প্যারেন্টে) absolute বসে সম্পূর্ণ ঢেকে দেয়, .ait-scroll-bottom যেভাবে
+   পিন করা থাকে ঠিক সেভাবেই। খোলা/বন্ধ শুধু display টগল — কোনো transform/
+   opacity-animation ছাড়া একটামাত্র হালকা fade-in (নিচের বার্তাগুলোর
+   অ্যানিমেশনের মতোই, prefers-reduced-motion এ বন্ধ হয়ে যায়)। ---- */
+.ait-history-panel{
+  position:absolute;inset:0;background:var(--parchment);z-index:2;
+  display:flex;flex-direction:column;animation:aitMsgIn .18s ease;
+}
+.ait-history-topbar{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:12px 16px;border-bottom:1px solid var(--line);flex-shrink:0;
+}
+.ait-history-topbar span{
+  font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-weight:700;font-size:13px;
+  color:var(--ink);display:flex;align-items:center;gap:7px;
+}
+.ait-history-topbar span i{color:var(--gold);font-size:12px;}
+.ait-history-close{
+  width:28px;height:28px;border-radius:8px;border:none;background:none;color:var(--ink-soft);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;
+  transition:background .15s ease,color .15s ease;
+}
+.ait-history-close:hover{background:var(--sage);color:var(--ink);}
+.ait-history-list{flex:1;overflow-y:auto;padding:10px 14px 16px;scrollbar-width:thin;scrollbar-color:var(--line) transparent;}
+.ait-history-list::-webkit-scrollbar{width:5px;}
+.ait-history-list::-webkit-scrollbar-track{background:transparent;}
+.ait-history-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:3px;}
+
+.ait-history-empty{
+  height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  color:var(--ink-soft);text-align:center;padding:20px;
+}
+.ait-history-empty i{font-size:26px;color:var(--gold-soft);}
+.ait-history-empty p{margin:0;font-size:13px;max-width:220px;line-height:1.6;}
+
+.ait-history-item{
+  display:flex;align-items:center;gap:6px;background:var(--panel);border:1px solid var(--line);
+  border-radius:var(--radius);padding:11px 8px 11px 12px;margin-bottom:8px;cursor:pointer;
+  transition:border-color .15s ease;
+}
+.ait-history-item:hover{border-color:var(--gold);}
+.ait-history-item.ait-history-item-active{border-color:var(--gold);background:var(--gold-soft);}
+.ait-history-item-main{flex:1;min-width:0;}
+.ait-history-item-title{
+  font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:13.5px;font-weight:600;color:var(--ink);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.ait-history-item-title i{color:var(--gold);font-size:11px;margin-right:2px;}
+.ait-history-item-meta{font-size:11px;color:var(--ink-soft);margin-top:3px;}
+.ait-history-item-delete{
+  flex-shrink:0;width:30px;height:30px;border-radius:8px;border:none;background:none;color:var(--ink-soft);
+  cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:13px;
+  transition:background .15s ease,color .15s ease;
+}
+.ait-history-item-delete:hover{background:color-mix(in srgb, var(--danger, #c0392b) 12%, transparent);color:var(--danger, #c0392b);}
+
+/* ---- অতিথি-সীমা গেট কার্ড — .ait-ctx এর মতোই বাম পাশে গোল্ড অ্যাকসেন্ট
+   বর্ডার (একই "গুরুত্বপূর্ণ প্যানেল" ভিজ্যুয়াল ভাষা), মডেল-বাবলের কলামেই
+   বসে যাতে চ্যাটের স্বাভাবিক প্রবাহে (স্ক্রল/অ্যানিমেশন) মিশে থাকে। ---- */
+.ait-gate-card{
+  background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--gold);
+  border-radius:var(--radius);padding:14px 15px;max-width:100%;
+}
+.ait-gate-card p{
+  margin:0 0 11px;font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:13.5px;
+  line-height:1.65;color:var(--ink);
+}
+.ait-gate-btn{
+  width:100%;background:var(--gold);color:var(--teal-deep);border:none;border-radius:10px;
+  padding:10px;font-family:var(--font-ui,'Hind Siliguri'),sans-serif;font-size:13.5px;font-weight:700;
+  cursor:pointer;transition:background .15s ease,transform .1s ease;
+}
+.ait-gate-btn:hover{background:var(--gold-soft);}
+.ait-gate-btn:active{transform:scale(.98);}
+
+/* ---- ইনপুট লক (অতিথি-সীমা শেষ) অবস্থায় হালকা ইঙ্গিত — কোনো নতুন রং না,
+   শুধু disabled অবস্থার বিদ্যমান opacity/cursor বিধি প্রযোজ্য থাকে
+   (.ait-inputbar textarea:disabled, .ait-send-btn:disabled — নিচে)। ---- */
+.ait-inputbar textarea:disabled{opacity:.6;cursor:not-allowed;}
+
+@media (max-width:480px){
+  .ait-history-item-title{font-size:13px;}
 }
 
 /* ================= রিডারের প্রতি-আয়াত "AI তাফসীর" বাটন =================
