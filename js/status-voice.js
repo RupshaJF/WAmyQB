@@ -476,7 +476,7 @@ function renderMusicSourcePicker(slide){
     </div>
     ${libSection}
     <audio id="statusMusicLibPreviewAudio" style="display:none;"></audio>
-    <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনে রাখা যেকোনো গজল/নাশিদ ফাইল ব্যবহার করা যাবে — কপিরাইটেড গান দেওয়া থেকে বিরত থাকুন। একবার যুক্ত করা অডিও "আমার মিউজিক"-এ জমা থাকবে, পরেরবার এক ট্যাপেই বেছে নেওয়া যাবে।</div>`;
+    <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনের অডিও যুক্ত করুন, পরেরবার এক ট্যাপেই বেছে নেওয়া যাবে।</div>`;
 
   if(current){
     document.getElementById('statusMusicRemoveBtn').onclick = () => {
