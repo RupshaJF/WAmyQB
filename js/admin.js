@@ -10,7 +10,9 @@ const AdminPanel = (() => {
 
   /* ── state ── */
   let _db = null, _auth = null, _user = null;
-  let _unsub = null, _overlay = null, _ready = false;
+  let _unsub = null, _unsubMusic = null, _overlay = null, _ready = false;
+  let _musicPick = null; // { audioBuffer, fileName, totalSec, maxSec, startSec } — in-progress upload draft
+  const AP_MUSIC_MAX_BYTES = 150000; // matches firestore.rules' sharedMusic.audioData cap
 
   /* ══════════════════════════════════════════════════════
      CSS — scoped under #apOverlay to avoid conflicts
@@ -273,6 +275,44 @@ const AdminPanel = (() => {
     #apOverlay .ap-row { grid-template-columns:1fr; }
     #apOverlay .ap-who { display:none; }
   }
+
+  /* section tabs (exam / music) */
+  #apOverlay .ap-tabs{
+    display:flex;gap:4px;padding:0 16px;background:var(--parchment,#fbf9f4);
+    border-bottom:1px solid var(--line,#e2ddd0);flex-shrink:0;overflow-x:auto;
+  }
+  #apOverlay .ap-tab{
+    padding:12px 6px;background:none;border:none;border-bottom:2px solid transparent;
+    font-family:'Hind Siliguri',sans-serif;font-size:13.5px;font-weight:600;white-space:nowrap;
+    color:var(--ink-soft,#5c6d64);cursor:pointer;display:flex;align-items:center;gap:7px;margin-right:16px;
+    transition:color .15s,border-color .15s;
+  }
+  #apOverlay .ap-tab i{font-size:13px;}
+  #apOverlay .ap-tab.active{color:var(--gold,#b8863b);border-bottom-color:var(--gold,#b8863b);}
+
+  /* music: file picker + track rows (waveform/trim classes are reused as-is
+     from status-extra.css — .status-trim-*, .status-sheet-btn, .status-audio-*
+     are already styled for a light panel background, only these two need a
+     light-bg override since they default to the dark composer stage) */
+  #apOverlay .status-audio-time{color:var(--ink-soft,#5c6d64);}
+  #apOverlay .ap-file-btn{
+    display:flex;align-items:center;justify-content:center;gap:9px;width:100%;box-sizing:border-box;
+    padding:13px;background:#fff;border:1.5px dashed var(--line,#e2ddd0);border-radius:10px;
+    color:var(--ink-soft,#5c6d64);font-family:'Hind Siliguri',sans-serif;font-size:13px;cursor:pointer;
+  }
+  #apOverlay .ap-file-btn i{font-size:16px;color:var(--gold,#b8863b);}
+  #apOverlay .ap-music-row{
+    display:flex;align-items:center;gap:11px;padding:12px 0;border-bottom:1px solid var(--line,#e2ddd0);
+  }
+  #apOverlay .ap-music-row:last-child{border-bottom:none;padding-bottom:0;}
+  #apOverlay .ap-music-row:first-child{padding-top:0;}
+  #apOverlay .ap-music-play{
+    width:32px;height:32px;border-radius:9px;border:none;background:var(--gold,#b8863b);color:#fff;
+    display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;font-size:12px;
+  }
+  #apOverlay .ap-music-info{flex:1;min-width:0;}
+  #apOverlay .ap-music-title{font-size:14px;font-weight:700;color:var(--ink,#1c2b23);word-break:break-word;}
+  #apOverlay .ap-music-time{font-size:11.5px;color:var(--ink-soft,#5c6d64);margin-top:2px;}
   `;
 
   /* ── helpers ── */
@@ -403,6 +443,28 @@ const AdminPanel = (() => {
     </div>`;
   }
 
+  /* ── form HTML (new shared music track) ── */
+  function musicAddFormHtml() {
+    return `
+    <div class="ap-card" id="apMusicAddCard">
+      <div class="ap-card-head"><i class="fa-solid fa-circle-plus"></i> নতুন ট্র্যাক যোগ করুন</div>
+
+      <div class="ap-field">
+        <label class="ap-lbl">ট্র্যাকের নাম <span class="req">*</span></label>
+        <input class="ap-input" id="apMT" type="text" placeholder="যেমন: নাশিদ — পথের আলো" autocomplete="off">
+      </div>
+      <div class="ap-field">
+        <label class="ap-lbl">অডিও ফাইল <span class="req">*</span></label>
+        <label class="ap-file-btn" id="apMusicFileBtn">
+          <i class="fa-solid fa-file-audio"></i><span id="apMusicFileLabel">ফাইল বাছুন (mp3 / m4a / wav...)</span>
+          <input type="file" accept="audio/*" id="apMusicFileInput" style="display:none;">
+        </label>
+        <p class="ap-hint"><i class="fa-solid fa-circle-info"></i>সর্বোচ্চ ১৫ সেকেন্ড ব্যবহার হবে — ফাইল বড় হলে পরের ধাপে যেকোনো অংশ বেছে নেওয়া যাবে। শুধু ব্যবহারের অনুমতি আছে এমন অডিও দিন (নিজের তৈরি বা রয়্যালটি-ফ্রি/কপিরাইট-মুক্ত সোর্স) — কপিরাইটেড গান দেবেন না।</p>
+      </div>
+      <div id="apMusicTrimArea"></div>
+    </div>`;
+  }
+
   /* ── build full overlay HTML ── */
   function buildOverlay() {
     const el = document.createElement('div');
@@ -411,7 +473,7 @@ const AdminPanel = (() => {
       <div class="ap-bar">
         <div class="ap-bar-left">
           <i class="fa-solid fa-user-shield"></i>
-          এক্সাম অ্যাডমিন প্যানেল
+          অ্যাডমিন প্যানেল
         </div>
         <div class="ap-bar-right">
           <span class="ap-who" id="apWho"></span>
@@ -428,35 +490,62 @@ const AdminPanel = (() => {
         <span>যাচাই হচ্ছে...</span>
       </div>
 
+      <!-- tabs (shown once verified) -->
+      <div class="ap-tabs" id="apTabs" style="display:none;">
+        <button type="button" class="ap-tab active" id="apTabExam" data-tab="exam"><i class="fa-solid fa-pen-to-square"></i> পরীক্ষা</button>
+        <button type="button" class="ap-tab" id="apTabMusic" data-tab="music"><i class="fa-solid fa-record-vinyl"></i> মিউজিক</button>
+      </div>
+
       <!-- main body -->
       <div class="ap-body" id="apBody" style="display:none;">
 
-        <!-- stats -->
-        <div class="ap-stats">
-          <div class="ap-stat">
-            <div class="ap-stat-val" id="apStatTotal">—</div>
-            <div class="ap-stat-lbl">মোট পরীক্ষা</div>
+        <div id="apPanelExam" style="display:flex;flex-direction:column;gap:16px;">
+          <!-- stats -->
+          <div class="ap-stats">
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apStatTotal">—</div>
+              <div class="ap-stat-lbl">মোট পরীক্ষা</div>
+            </div>
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apStatLive">—</div>
+              <div class="ap-stat-lbl">এখন লাইভ</div>
+            </div>
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apStatSched">—</div>
+              <div class="ap-stat-lbl">শিডিউল</div>
+            </div>
           </div>
-          <div class="ap-stat">
-            <div class="ap-stat-val" id="apStatLive">—</div>
-            <div class="ap-stat-lbl">এখন লাইভ</div>
-          </div>
-          <div class="ap-stat">
-            <div class="ap-stat-val" id="apStatSched">—</div>
-            <div class="ap-stat-lbl">শিডিউল</div>
+
+          ${addFormHtml()}
+
+          <!-- list -->
+          <div class="ap-card">
+            <div class="ap-card-head"><i class="fa-solid fa-list"></i> সব পরীক্ষার তালিকা</div>
+            <div id="apList"><div class="ap-empty"><i class="fa-solid fa-spinner fa-spin"></i>লোড হচ্ছে...</div></div>
           </div>
         </div>
 
-        ${addFormHtml()}
+        <div id="apPanelMusic" style="display:none;flex-direction:column;gap:16px;">
+          <!-- stats -->
+          <div class="ap-stats" style="grid-template-columns:1fr;">
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apMusicStatTotal">—</div>
+              <div class="ap-stat-lbl">মোট ট্র্যাক (শেয়ার্ড লাইব্রেরি)</div>
+            </div>
+          </div>
 
-        <!-- list -->
-        <div class="ap-card">
-          <div class="ap-card-head"><i class="fa-solid fa-list"></i> সব পরীক্ষার তালিকা</div>
-          <div id="apList"><div class="ap-empty"><i class="fa-solid fa-spinner fa-spin"></i>লোড হচ্ছে...</div></div>
+          ${musicAddFormHtml()}
+
+          <!-- list -->
+          <div class="ap-card">
+            <div class="ap-card-head"><i class="fa-solid fa-list"></i> সব ট্র্যাকের তালিকা</div>
+            <div id="apMusicList"><div class="ap-empty"><i class="fa-solid fa-spinner fa-spin"></i>লোড হচ্ছে...</div></div>
+          </div>
         </div>
       </div>
 
       <div class="ap-toast" id="apToast"></div>
+      <audio id="apMusicPreviewAudio" style="display:none;"></audio>
     `;
     return el;
   }
@@ -479,6 +568,24 @@ const AdminPanel = (() => {
       });
       _overlay.querySelector('#apT').focus();
     };
+
+    _overlay.querySelector('#apTabExam').onclick = () => switchTab('exam');
+    _overlay.querySelector('#apTabMusic').onclick = () => switchTab('music');
+
+    _overlay.querySelector('#apMusicFileInput').addEventListener('change', (e) => {
+      const file = e.target.files && e.target.files[0];
+      e.target.value = '';
+      if (file) handleAdminMusicFilePick(file);
+    });
+  }
+
+  /* ── tab switching ── */
+  function switchTab(tab) {
+    const isExam = tab === 'exam';
+    _overlay.querySelector('#apTabExam').classList.toggle('active', isExam);
+    _overlay.querySelector('#apTabMusic').classList.toggle('active', !isExam);
+    _overlay.querySelector('#apPanelExam').style.display = isExam ? 'flex' : 'none';
+    _overlay.querySelector('#apPanelMusic').style.display = isExam ? 'none' : 'flex';
   }
 
   /* ── add exam ── */
@@ -687,6 +794,229 @@ const AdminPanel = (() => {
     }
   }
 
+  /* ══════════════════════════════════════════════════════
+     MUSIC TAB — admin-curated shared library (sharedMusic
+     collection), browsed by everyone in the status composer's
+     music picker (js/status-voice.js). Reuses that file's generic
+     audio helpers (statusVoiceDecodeFile/ComputePeaks/RenderClipToBlob,
+     statusBlobToDataUrl, statusEstimateBase64Bytes, statusFormatRange,
+     fmtTime, clamp) — it's loaded before this file, so these are
+     already-defined globals here. Every clip is trimmed to at most
+     STATUS_MUSIC_MAX_MS (the same 15s cap status backgrounds use) so it
+     can be attached to a status as-is with no further trimming needed.
+  ══════════════════════════════════════════════════════ */
+
+  /* ── file picked: decode, then show the right next step ── */
+  async function handleAdminMusicFilePick(file) {
+    const labelEl = _overlay.querySelector('#apMusicFileLabel');
+    const areaEl  = _overlay.querySelector('#apMusicTrimArea');
+    if (labelEl) labelEl.textContent = file.name || 'অডিও';
+    areaEl.innerHTML = `<p class="ap-hint"><i class="fa-solid fa-circle-notch fa-spin"></i> ফাইল পড়া হচ্ছে...</p>`;
+    try {
+      const audioBuffer = await statusVoiceDecodeFile(file);
+      _musicPick = {
+        audioBuffer, fileName: file.name || 'অডিও',
+        totalSec: audioBuffer.duration,
+        maxSec: Math.min(STATUS_MUSIC_MAX_MS/1000, audioBuffer.duration),
+        startSec: 0
+      };
+      renderAdminMusicTrimArea();
+    } catch(e) {
+      areaEl.innerHTML = `<p class="ap-hint"><i class="fa-solid fa-triangle-exclamation"></i> এই ফাইলটি পড়া যায়নি — অন্য একটি ফাইল বেছে দেখুন।</p>`;
+      _musicPick = null;
+    }
+  }
+
+  /* ── renders either "whole clip is short enough" or the drag-trim window
+     (same track/window/drag mechanic as the status composer's own trim
+     screen — see js/status-voice.js renderMusicTrimUI, mirrored here with
+     its own #apTrim* ids so the two never collide if both happen to be
+     open at once) ── */
+  function renderAdminMusicTrimArea() {
+    const areaEl = _overlay.querySelector('#apMusicTrimArea');
+    if (!_musicPick || !areaEl) return;
+    const { audioBuffer, totalSec, maxSec } = _musicPick;
+
+    if (totalSec <= maxSec + 0.05) {
+      areaEl.innerHTML = `
+        <div class="ap-hint" style="margin-top:10px;"><i class="fa-solid fa-circle-check"></i> পুরো ক্লিপটি (${fmtTime(totalSec)}) ব্যবহার হবে।</div>
+        <div class="ap-actions" style="margin-top:10px;">
+          <button type="button" class="ap-btn ap-btn-gold" id="apMusicAddBtn"><i class="fa-solid fa-plus"></i> ট্র্যাক যোগ করুন</button>
+        </div>`;
+      _overlay.querySelector('#apMusicAddBtn').onclick = addMusicTrack;
+      return;
+    }
+
+    const fullPeaks = statusVoiceComputePeaks(audioBuffer, 90, 0, totalSec);
+    areaEl.innerHTML = `
+      <div class="status-trim-wrap" style="margin-top:12px;">
+        <div class="status-trim-track" id="apTrimTrack">
+          <div class="status-voice-bars status-trim-bars">${fullPeaks.map(p => `<div class="status-voice-bar" style="height:${Math.round(p*100)}%"></div>`).join('')}</div>
+          <div class="status-trim-window" id="apTrimWindow"></div>
+        </div>
+        <div class="status-audio-time" id="apTrimTime"></div>
+        <div class="status-audio-actions">
+          <button type="button" class="status-sheet-btn" id="apTrimPreviewBtn"><i class="fa-solid fa-play"></i> শুনুন</button>
+          <button type="button" class="status-sheet-btn primary" id="apMusicAddBtn"><i class="fa-solid fa-check"></i> এই অংশ যোগ করুন</button>
+        </div>
+      </div>`;
+
+    const track = _overlay.querySelector('#apTrimTrack');
+    const win   = _overlay.querySelector('#apTrimWindow');
+    const timeEl = _overlay.querySelector('#apTrimTime');
+    win.style.width = (totalSec > 0 ? (maxSec/totalSec*100) : 100) + '%';
+
+    function updateWinPos() {
+      win.style.left = (totalSec > 0 ? (_musicPick.startSec/totalSec*100) : 0) + '%';
+      timeEl.textContent = statusFormatRange(_musicPick.startSec, maxSec, totalSec);
+    }
+    updateWinPos();
+
+    let dragging = false, dragStartX = 0, dragStartSec = 0;
+    win.addEventListener('pointerdown', (e) => {
+      dragging = true; dragStartX = e.clientX; dragStartSec = _musicPick.startSec;
+      try{ win.setPointerCapture(e.pointerId); }catch(err){}
+    });
+    win.addEventListener('pointermove', (e) => {
+      if (!dragging) return;
+      const trackW = track.getBoundingClientRect().width || 1;
+      const deltaSec = ((e.clientX - dragStartX) / trackW) * totalSec;
+      _musicPick.startSec = clamp(dragStartSec + deltaSec, 0, Math.max(0, totalSec - maxSec));
+      updateWinPos();
+    });
+    win.addEventListener('pointerup', () => { dragging = false; });
+    win.addEventListener('pointercancel', () => { dragging = false; });
+    track.addEventListener('pointerdown', (e) => {
+      if (e.target === win) return;
+      const rect = track.getBoundingClientRect();
+      const frac = clamp((e.clientX - rect.left) / rect.width, 0, 1);
+      _musicPick.startSec = clamp(frac*totalSec - maxSec/2, 0, Math.max(0, totalSec - maxSec));
+      updateWinPos();
+    });
+
+    const previewAudioEl = document.getElementById('apMusicPreviewAudio');
+    _overlay.querySelector('#apTrimPreviewBtn').onclick = async () => {
+      const btn = _overlay.querySelector('#apTrimPreviewBtn');
+      btn.disabled = true;
+      try {
+        previewAudioEl.pause();
+        const blob = await statusVoiceRenderClipToBlob(audioBuffer, _musicPick.startSec, maxSec, STATUS_MUSIC_BITRATE);
+        previewAudioEl.src = URL.createObjectURL(blob);
+        await previewAudioEl.play();
+      } catch(e) { toast('প্রিভিউ চালানো যায়নি', false); }
+      btn.disabled = false;
+    };
+
+    _overlay.querySelector('#apMusicAddBtn').onclick = addMusicTrack;
+  }
+
+  /* ── render final clip + upload to sharedMusic ── */
+  async function addMusicTrack() {
+    const titleEl = _overlay.querySelector('#apMT');
+    const title = (titleEl.value || '').trim();
+    if (!title) { toast('ট্র্যাকের নাম লিখুন', false); titleEl.focus(); return; }
+    if (!_musicPick) { toast('আগে একটি অডিও ফাইল বাছুন', false); return; }
+
+    const btn = _overlay.querySelector('#apMusicAddBtn');
+    if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> প্রসেস হচ্ছে...'; }
+    try {
+      const { audioBuffer, startSec, maxSec } = _musicPick;
+      const blob = await statusVoiceRenderClipToBlob(audioBuffer, startSec, maxSec, STATUS_MUSIC_BITRATE);
+      const dataUrl = await statusBlobToDataUrl(blob);
+      if (statusEstimateBase64Bytes(dataUrl) > AP_MUSIC_MAX_BYTES) {
+        toast('ফাইলটি এখনও বড়, ছোট একটি অংশ বেছে আবার চেষ্টা করুন', false);
+        renderAdminMusicTrimArea();
+        return;
+      }
+      const peaks = statusVoiceComputePeaks(audioBuffer, STATUS_PEAK_BARS, startSec, maxSec);
+      await _db.collection('sharedMusic').add({
+        title,
+        audioData: dataUrl,
+        duration: Math.round(maxSec*1000),
+        peaks,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+        createdBy: _user.uid
+      });
+      toast('নতুন ট্র্যাক যোগ হয়েছে ✓');
+      clearMusicForm();
+    } catch(e) {
+      toast('যোগ করা যায়নি: ' + (e.message||''), false);
+      renderAdminMusicTrimArea();
+    }
+  }
+
+  function clearMusicForm() {
+    const titleEl = _overlay.querySelector('#apMT');
+    if (titleEl) titleEl.value = '';
+    const labelEl = _overlay.querySelector('#apMusicFileLabel');
+    if (labelEl) labelEl.textContent = 'ফাইল বাছুন (mp3 / m4a / wav...)';
+    const fileInput = _overlay.querySelector('#apMusicFileInput');
+    if (fileInput) fileInput.value = '';
+    const areaEl = _overlay.querySelector('#apMusicTrimArea');
+    if (areaEl) areaEl.innerHTML = '';
+    _musicPick = null;
+  }
+
+  /* ── list row + render ── */
+  function musicRowHtml(id, d) {
+    return `<div class="ap-music-row" data-id="${id}">
+      <button type="button" class="ap-music-play" data-id="${id}" title="প্রিভিউ"><i class="fa-solid fa-play"></i></button>
+      <div class="ap-music-info">
+        <div class="ap-music-title">${x(d.title || 'ট্র্যাক')}</div>
+        <div class="ap-music-time">${fmtTime((d.duration||0)/1000)}</div>
+      </div>
+      <button class="ap-icon-btn d" data-id="${id}" data-title="${x(d.title||'')}" title="মুছুন"><i class="fa-solid fa-trash"></i></button>
+    </div>`;
+  }
+
+  function renderMusicList(docs) {
+    const box = _overlay && _overlay.querySelector('#apMusicList');
+    if (!box) return;
+    const sv = _overlay.querySelector('#apMusicStatTotal');
+    if (sv) sv.textContent = docs.length === 0 ? '০' : String(docs.length);
+
+    if (!docs.length) {
+      box.innerHTML = `<div class="ap-empty"><i class="fa-solid fa-inbox"></i>এখনো কোনো ট্র্যাক যোগ করা হয়নি।</div>`;
+      return;
+    }
+    box.innerHTML = `<div class="ap-list">${docs.map(({id,data}) => musicRowHtml(id,data)).join('')}</div>`;
+
+    const previewAudioEl = document.getElementById('apMusicPreviewAudio');
+    let playingId = null;
+    box.querySelectorAll('.ap-music-play').forEach(btn => {
+      btn.onclick = () => {
+        const id = btn.dataset.id;
+        if (playingId === id && !previewAudioEl.paused) { previewAudioEl.pause(); return; }
+        const d = docs.find(item => item.id === id);
+        if (!d || !d.data.audioData) return;
+        box.querySelectorAll('.ap-music-play i').forEach(i => { i.className = 'fa-solid fa-play'; });
+        previewAudioEl.src = d.data.audioData;
+        previewAudioEl.play().then(() => {
+          playingId = id;
+          const i = btn.querySelector('i'); if (i) i.className = 'fa-solid fa-pause';
+        }).catch(() => {});
+      };
+    });
+    previewAudioEl.onended = () => {
+      box.querySelectorAll('.ap-music-play i').forEach(i => { i.className = 'fa-solid fa-play'; });
+      playingId = null;
+    };
+
+    box.querySelectorAll('.ap-icon-btn.d').forEach(btn => {
+      btn.onclick = () => deleteMusicTrack(btn.dataset.id, btn.dataset.title);
+    });
+  }
+
+  async function deleteMusicTrack(id, title) {
+    if (!confirm(`"${title || 'এই ট্র্যাকটি'}" মুছে ফেলতে চান?`)) return;
+    try {
+      await _db.collection('sharedMusic').doc(id).delete();
+      toast('ট্র্যাকটি মুছে ফেলা হয়েছে');
+    } catch(e) {
+      toast('মোছা ব্যর্থ হয়েছে', false);
+    }
+  }
+
   /* ── Firestore listener ── */
   function startListener() {
     if (_unsub) { _unsub(); _unsub = null; }
@@ -694,6 +1024,17 @@ const AdminPanel = (() => {
       snap => renderList(snap.docs.map(d => ({id: d.id, data: d.data()}))),
       err  => {
         const b = _overlay && _overlay.querySelector('#apList');
+        if (b) b.innerHTML = `<div class="ap-empty"><i class="fa-solid fa-triangle-exclamation"></i>তালিকা লোড হয়নি: ${x(err.message||'')}</div>`;
+      }
+    );
+  }
+
+  function startMusicListener() {
+    if (_unsubMusic) { _unsubMusic(); _unsubMusic = null; }
+    _unsubMusic = _db.collection('sharedMusic').orderBy('createdAt','desc').onSnapshot(
+      snap => renderMusicList(snap.docs.map(d => ({id: d.id, data: d.data()}))),
+      err  => {
+        const b = _overlay && _overlay.querySelector('#apMusicList');
         if (b) b.innerHTML = `<div class="ap-empty"><i class="fa-solid fa-triangle-exclamation"></i>তালিকা লোড হয়নি: ${x(err.message||'')}</div>`;
       }
     );
@@ -714,11 +1055,13 @@ const AdminPanel = (() => {
     if (!admin) { close(); return; }
 
     _overlay.querySelector('#apGate').style.display = 'none';
+    _overlay.querySelector('#apTabs').style.display = 'flex';
     _overlay.querySelector('#apBody').style.display  = 'flex';
     _overlay.querySelector('#apWho').textContent     = user.email || '';
     _overlay.querySelector('#apLogout').style.display = 'inline-flex';
 
     startListener();
+    startMusicListener();
   }
 
   /* ══ PUBLIC ══ */
@@ -737,10 +1080,12 @@ const AdminPanel = (() => {
       wireEvents();
     }
 
-    // reset gate visibility every open
+    // reset gate/tabs visibility every open, always starting on the exam tab
     _overlay.querySelector('#apGate').style.display = 'flex';
+    _overlay.querySelector('#apTabs').style.display = 'none';
     _overlay.querySelector('#apBody').style.display = 'none';
     _overlay.querySelector('#apLogout').style.display = 'none';
+    switchTab('exam');
 
     _overlay.style.display = 'flex';
     requestAnimationFrame(() => _overlay.classList.add('ap-in'));
@@ -753,6 +1098,9 @@ const AdminPanel = (() => {
     _overlay.classList.remove('ap-in');
     setTimeout(() => { if (_overlay) _overlay.style.display = 'none'; }, 280);
     if (_unsub) { _unsub(); _unsub = null; }
+    if (_unsubMusic) { _unsubMusic(); _unsubMusic = null; }
+    const previewEl = _overlay.querySelector('#apMusicPreviewAudio');
+    if (previewEl) { try{ previewEl.pause(); }catch(e){} }
     _user = null;
   }
 

@@ -467,6 +467,8 @@ function renderMusicSourcePicker(slide){
     <div class="status-music-lib-list" id="statusMusicLibList">${lib.map(statusMusicLibRowHtml).join('')}</div>
     <div class="status-music-lib-empty" id="statusMusicLibEmpty" style="display:none;">কোনো মিল পাওয়া যায়নি</div>` : '';
 
+  const currentTrack = slide.musicData ? { id:'__current__', dataUrl: slide.musicData, duration: slide.musicDuration } : null;
+
   body.innerHTML = `
     ${current}
     <div class="status-audio-source-row">
@@ -478,6 +480,7 @@ function renderMusicSourcePicker(slide){
         <input type="file" accept="audio/*" id="statusMusicFileInput" style="display:none;">
       </label>
     </div>
+    <div id="statusSharedMusicSection"><p class="status-audio-hint" style="text-align:center;padding:2px 0 4px;"><i class="fa-solid fa-circle-notch fa-spin"></i> সংগ্রহ লোড হচ্ছে...</p></div>
     ${libSection}
     <audio id="statusMusicLibPreviewAudio" style="display:none;"></audio>
     <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনে রাখা যেকোনো গজল/নাশিদ ফাইল ব্যবহার করা যাবে — কপিরাইটেড গান দেওয়া থেকে বিরত থাকুন। একবার যুক্ত করা অডিও "আমার মিউজিক"-এ জমা থাকবে, পরেরবার এক ট্যাপেই বেছে নেওয়া যাবে।</div>`;
@@ -499,7 +502,54 @@ function renderMusicSourcePicker(slide){
     if(file) handleMusicFilePick(file);
   });
 
-  wireMusicLibraryList(slide, lib, slide.musicData ? { id:'__current__', dataUrl: slide.musicData, duration: slide.musicDuration } : null);
+  wireMusicLibraryList(slide, lib, currentTrack, []);
+  loadSharedMusicSection(slide, lib, currentTrack);
+}
+
+// Admin-curated shared catalog (Firestore `sharedMusic`, managed from the
+// admin panel's "মিউজিক" tab) — fetched once per page session and cached,
+// since it's the same for every user and only an admin can change it.
+let statusSharedMusicCache = null;
+async function statusFetchSharedMusic(){
+  if(statusSharedMusicCache) return statusSharedMusicCache;
+  if(typeof fbDb === 'undefined' || !fbDb) return [];
+  try{
+    const snap = await fbDb.collection('sharedMusic').orderBy('createdAt','desc').get();
+    statusSharedMusicCache = snap.docs.map(d => {
+      const v = d.data();
+      return { id: 'shared:'+d.id, name: v.title, dataUrl: v.audioData, duration: v.duration, peaks: v.peaks };
+    });
+  }catch(e){ statusSharedMusicCache = []; }
+  return statusSharedMusicCache;
+}
+
+async function loadSharedMusicSection(slide, lib, currentTrack){
+  const sharedList = await statusFetchSharedMusic();
+  const sectionEl = document.getElementById('statusSharedMusicSection');
+  if(!sectionEl) return; // sheet was closed/navigated away before this resolved
+  if(!sharedList.length){ sectionEl.innerHTML = ''; return; }
+  sectionEl.innerHTML = `
+    <div class="status-music-lib-head">
+      <div class="status-music-lib-head-title"><i class="fa-solid fa-layer-group"></i> সংগ্রহ <span class="status-music-lib-count">${toBn(sharedList.length)}</span></div>
+      ${sharedList.length > 6 ? `<div class="status-music-lib-search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input type="text" class="status-music-lib-search" id="statusSharedMusicSearch" placeholder="খুঁজুন..."></div>` : ''}
+    </div>
+    <div class="status-music-lib-list" id="statusSharedMusicList">${sharedList.map(statusSharedMusicRowHtml).join('')}</div>
+    <div class="status-music-lib-empty" id="statusSharedMusicEmpty" style="display:none;">কোনো মিল পাওয়া যায়নি</div>`;
+  wireMusicLibraryList(slide, lib, currentTrack, sharedList);
+}
+
+function statusSharedMusicRowHtml(t, idx){
+  const delay = Math.min((idx || 0) * 35, 300);
+  return `<div class="status-music-lib-row" data-id="${t.id}" role="button" tabindex="0" style="animation-delay:${delay}ms">
+    <button type="button" class="status-music-lib-play" data-id="${t.id}">
+      <i class="fa-solid fa-play"></i>
+      <span class="status-music-lib-eq"><i></i><i></i><i></i></span>
+    </button>
+    <div class="status-music-lib-info">
+      <div class="status-music-lib-name">${escapeHtml(t.name || 'অডিও')}</div>
+      <div class="status-music-lib-time">${fmtTime((t.duration||0)/1000)}</div>
+    </div>
+  </div>`;
 }
 
 function statusMusicLibRowHtml(t, idx){
@@ -526,16 +576,17 @@ function attachLibTrackToSlide(slide, t){
   showToast('মিউজিক যুক্ত হয়েছে');
 }
 
-// Wires the library list + the "currently attached" card to one shared
+// Wires the library list(s) + the "currently attached" card to one shared
 // preview <audio> element, so tapping a different play button stops whichever
 // clip was previewing before. Toggles a .playing class (button + its row)
 // rather than swapping icon classNames by hand — the CSS owns what "playing"
 // looks like (equalizer bars, gold accents), this just flags the state.
-function wireMusicLibraryList(slide, lib, currentTrack){
+// sharedList is the admin-curated catalog (may still be loading — an empty
+// array here just means its section isn't wired yet, harmless).
+function wireMusicLibraryList(slide, lib, currentTrack, sharedList){
+  sharedList = sharedList || [];
   const body = document.getElementById('statusAudioSheetBody');
   const audioEl = document.getElementById('statusMusicLibPreviewAudio');
-  const listEl = document.getElementById('statusMusicLibList');
-  const searchEl = document.getElementById('statusMusicLibSearch');
   if(!audioEl || !body) return;
 
   function stopPreview(){
@@ -549,7 +600,10 @@ function wireMusicLibraryList(slide, lib, currentTrack){
   }
   audioEl.addEventListener('ended', stopPreview);
 
-  function findTrack(id){ return id === '__current__' ? currentTrack : lib.find(t => t.id === id); }
+  function findTrack(id){
+    if(id === '__current__') return currentTrack;
+    return lib.find(t => t.id === id) || sharedList.find(t => t.id === id);
+  }
 
   body.querySelectorAll('.status-music-lib-play').forEach(btn => {
     btn.onclick = (e) => {
@@ -569,39 +623,46 @@ function wireMusicLibraryList(slide, lib, currentTrack){
     };
   });
 
-  if(listEl){
+  // Personal library rows can be deleted; shared/collection rows can't (no
+  // .status-music-lib-del button is ever rendered for them, so that part is
+  // simply skipped for those rows) — otherwise both behave identically:
+  // tap the row to attach, Enter/Space works too, search filters live.
+  [
+    { listId: 'statusMusicLibList', searchId: 'statusMusicLibSearch', emptyId: 'statusMusicLibEmpty', source: lib, onDelete: (id) => { statusMusicLibRemove(id); renderMusicSourcePicker(slide); } },
+    { listId: 'statusSharedMusicList', searchId: 'statusSharedMusicSearch', emptyId: 'statusSharedMusicEmpty', source: sharedList, onDelete: null }
+  ].forEach(cfg => {
+    const listEl = document.getElementById(cfg.listId);
+    if(!listEl) return;
+
     listEl.querySelectorAll('.status-music-lib-row').forEach(row => {
       row.onclick = () => {
-        const t = lib.find(x => x.id === row.dataset.id);
+        const t = cfg.source.find(x => x.id === row.dataset.id);
         if(t) attachLibTrackToSlide(slide, t);
       };
       row.addEventListener('keydown', (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); row.click(); } });
       const delBtn = row.querySelector('.status-music-lib-del');
-      if(delBtn){
-        delBtn.onclick = (e) => {
-          e.stopPropagation();
-          statusMusicLibRemove(row.dataset.id);
-          renderMusicSourcePicker(slide);
-        };
+      if(delBtn && cfg.onDelete){
+        delBtn.onclick = (e) => { e.stopPropagation(); cfg.onDelete(row.dataset.id); };
       }
     });
-  }
 
-  if(searchEl){
-    const emptyEl = document.getElementById('statusMusicLibEmpty');
-    searchEl.oninput = () => {
-      const q = searchEl.value.trim().toLowerCase();
-      let visibleCount = 0;
-      listEl.querySelectorAll('.status-music-lib-row').forEach(row => {
-        const nameEl = row.querySelector('.status-music-lib-name');
-        const name = (nameEl ? nameEl.textContent : '').toLowerCase();
-        const match = !q || name.includes(q);
-        row.style.display = match ? '' : 'none';
-        if(match) visibleCount++;
-      });
-      if(emptyEl) emptyEl.style.display = visibleCount ? 'none' : 'block';
-    };
-  }
+    const searchEl = document.getElementById(cfg.searchId);
+    const emptyEl = document.getElementById(cfg.emptyId);
+    if(searchEl){
+      searchEl.oninput = () => {
+        const q = searchEl.value.trim().toLowerCase();
+        let visibleCount = 0;
+        listEl.querySelectorAll('.status-music-lib-row').forEach(row => {
+          const nameEl = row.querySelector('.status-music-lib-name');
+          const name = (nameEl ? nameEl.textContent : '').toLowerCase();
+          const match = !q || name.includes(q);
+          row.style.display = match ? '' : 'none';
+          if(match) visibleCount++;
+        });
+        if(emptyEl) emptyEl.style.display = visibleCount ? 'none' : 'block';
+      };
+    }
+  });
 }
 
 async function handleMusicFilePick(file){
