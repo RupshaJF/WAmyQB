@@ -87,6 +87,54 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    // ------------------------------------------------------------------
+    // এডমিন-কিউরেটেড শেয়ার্ড মিউজিক/নাশিদ লাইব্রেরি (admin.js "মিউজিক" ট্যাব
+    // থেকে যোগ/মোছা হয়, স্ট্যাটাস কম্পোজারের মিউজিক-পিকারে সবাই দেখে ও
+    // ব্যবহার করে — js/status-voice.js)। এক্সামের মতোই: সবাই পড়তে পারবে,
+    // লেখা শুধু isAdmin()। প্রতিটি ক্লিপ আগে থেকেই ১৫ সেকেন্ডে ট্রিম ও
+    // কম্প্রেস করা থাকে (স্ট্যাটাসে যেভাবে সরাসরি ব্যবহার হবে), তাই
+    // audioData ছোটই থাকে — 150000 বাইট cap তারপরও নিরাপত্তার জন্য।
+    // ------------------------------------------------------------------
+    match /sharedMusic/{trackId} {
+      allow read: if true;
+
+      allow create: if isAdmin()
+        && request.resource.data.keys().hasOnly(['title','audioData','duration','peaks','createdAt','createdBy','updatedAt'])
+        && request.resource.data.keys().hasAll(['title','audioData','duration','peaks','createdAt'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.audioData is string
+        && request.resource.data.audioData.size() > 0
+        && request.resource.data.audioData.size() <= 150000
+        && request.resource.data.duration is int
+        && request.resource.data.duration > 0
+        && request.resource.data.duration <= 16000
+        && request.resource.data.peaks is list
+        && request.resource.data.peaks.size() <= 60
+        && request.resource.data.createdAt == request.time
+        && (!('createdBy' in request.resource.data) || request.resource.data.createdBy == request.auth.uid)
+        && !('updatedAt' in request.resource.data);
+
+      allow update: if isAdmin()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title','audioData','duration','peaks','updatedAt'])
+        && request.resource.data.keys().hasOnly(['title','audioData','duration','peaks','createdAt','createdBy','updatedAt'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.title.size() <= 100
+        && request.resource.data.audioData is string
+        && request.resource.data.audioData.size() > 0
+        && request.resource.data.audioData.size() <= 150000
+        && request.resource.data.duration is int
+        && request.resource.data.duration > 0
+        && request.resource.data.duration <= 16000
+        && request.resource.data.peaks is list
+        && request.resource.data.peaks.size() <= 60
+        && ('updatedAt' in request.resource.data) && request.resource.data.updatedAt == request.time;
+
+      allow delete: if isAdmin();
+    }
+
     match /users/{uid} {
       allow read, write: if request.auth != null && request.auth.uid == uid;
       allow read, delete: if isAdmin(); // এডমিন প্যানেল থেকে দেখা/মুছার জন্য
