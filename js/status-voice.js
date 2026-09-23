@@ -450,7 +450,10 @@ function renderMusicSourcePicker(slide){
   const body = document.getElementById('statusAudioSheetBody');
   const current = slide.musicData
     ? `<div class="status-audio-current" id="statusMusicCurrentCard">
-         <button type="button" class="status-music-lib-play" data-id="__current__" title="প্রিভিউ শুনুন"><i class="fa-solid fa-play"></i></button>
+         <button type="button" class="status-music-lib-play" data-id="__current__" title="প্রিভিউ শুনুন">
+           <i class="fa-solid fa-play"></i>
+           <span class="status-music-lib-eq"><i></i><i></i><i></i></span>
+         </button>
          <div class="status-audio-current-label">${escapeHtml(slide.musicName || 'যুক্ত করা অডিও')} · ${fmtTime((slide.musicDuration||0)/1000)}</div>
          <button type="button" class="status-sheet-btn danger" id="statusMusicRemoveBtn" title="সরান"><i class="fa-solid fa-trash"></i></button>
        </div>` : '';
@@ -458,10 +461,11 @@ function renderMusicSourcePicker(slide){
   const lib = statusMusicLibLoad();
   const libSection = lib.length ? `
     <div class="status-music-lib-head">
-      <span>আমার মিউজিক</span>
-      ${lib.length > 6 ? `<input type="text" class="status-music-lib-search" id="statusMusicLibSearch" placeholder="খুঁজুন...">` : ''}
+      <div class="status-music-lib-head-title"><i class="fa-solid fa-record-vinyl"></i> আমার মিউজিক <span class="status-music-lib-count">${toBn(lib.length)}</span></div>
+      ${lib.length > 6 ? `<div class="status-music-lib-search-wrap"><i class="fa-solid fa-magnifying-glass"></i><input type="text" class="status-music-lib-search" id="statusMusicLibSearch" placeholder="খুঁজুন..."></div>` : ''}
     </div>
-    <div class="status-music-lib-list" id="statusMusicLibList">${lib.map(statusMusicLibRowHtml).join('')}</div>` : '';
+    <div class="status-music-lib-list" id="statusMusicLibList">${lib.map(statusMusicLibRowHtml).join('')}</div>
+    <div class="status-music-lib-empty" id="statusMusicLibEmpty" style="display:none;">কোনো মিল পাওয়া যায়নি</div>` : '';
 
   body.innerHTML = `
     ${current}
@@ -476,7 +480,7 @@ function renderMusicSourcePicker(slide){
     </div>
     ${libSection}
     <audio id="statusMusicLibPreviewAudio" style="display:none;"></audio>
-    <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনের অডিও যুক্ত করুন, পরেরবার এক ট্যাপেই বেছে নেওয়া যাবে।</div>`;
+    <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনে রাখা যেকোনো গজল/নাশিদ ফাইল ব্যবহার করা যাবে — কপিরাইটেড গান দেওয়া থেকে বিরত থাকুন। একবার যুক্ত করা অডিও "আমার মিউজিক"-এ জমা থাকবে, পরেরবার এক ট্যাপেই বেছে নেওয়া যাবে।</div>`;
 
   if(current){
     document.getElementById('statusMusicRemoveBtn').onclick = () => {
@@ -498,9 +502,13 @@ function renderMusicSourcePicker(slide){
   wireMusicLibraryList(slide, lib, slide.musicData ? { id:'__current__', dataUrl: slide.musicData, duration: slide.musicDuration } : null);
 }
 
-function statusMusicLibRowHtml(t){
-  return `<div class="status-music-lib-row" data-id="${t.id}" role="button" tabindex="0">
-    <button type="button" class="status-music-lib-play" data-id="${t.id}"><i class="fa-solid fa-play"></i></button>
+function statusMusicLibRowHtml(t, idx){
+  const delay = Math.min((idx || 0) * 35, 300);
+  return `<div class="status-music-lib-row" data-id="${t.id}" role="button" tabindex="0" style="animation-delay:${delay}ms">
+    <button type="button" class="status-music-lib-play" data-id="${t.id}">
+      <i class="fa-solid fa-play"></i>
+      <span class="status-music-lib-eq"><i></i><i></i><i></i></span>
+    </button>
     <div class="status-music-lib-info">
       <div class="status-music-lib-name">${escapeHtml(t.name || 'অডিও')}</div>
       <div class="status-music-lib-time">${fmtTime((t.duration||0)/1000)}</div>
@@ -520,9 +528,9 @@ function attachLibTrackToSlide(slide, t){
 
 // Wires the library list + the "currently attached" card to one shared
 // preview <audio> element, so tapping a different play button stops whichever
-// clip was previewing before — a plain play/pause toggle per row, deliberately
-// lighter than statusWirePlayableAudio's single-clip waveform-progress wiring
-// since a list of many rows doesn't need a live progress bar on each.
+// clip was previewing before. Toggles a .playing class (button + its row)
+// rather than swapping icon classNames by hand — the CSS owns what "playing"
+// looks like (equalizer bars, gold accents), this just flags the state.
 function wireMusicLibraryList(slide, lib, currentTrack){
   const body = document.getElementById('statusAudioSheetBody');
   const audioEl = document.getElementById('statusMusicLibPreviewAudio');
@@ -533,7 +541,11 @@ function wireMusicLibraryList(slide, lib, currentTrack){
   function stopPreview(){
     try{ audioEl.pause(); }catch(e){}
     audioEl.dataset.playingId = '';
-    body.querySelectorAll('.status-music-lib-play i').forEach(i => { i.className = 'fa-solid fa-play'; });
+    body.querySelectorAll('.status-music-lib-play.playing').forEach(b => {
+      b.classList.remove('playing');
+      const row = b.closest('.status-music-lib-row');
+      if(row) row.classList.remove('playing');
+    });
   }
   audioEl.addEventListener('ended', stopPreview);
 
@@ -550,8 +562,9 @@ function wireMusicLibraryList(slide, lib, currentTrack){
       audioEl.src = track.dataUrl;
       audioEl.dataset.playingId = id;
       audioEl.play().then(() => {
-        const i = btn.querySelector('i');
-        if(i) i.className = 'fa-solid fa-pause';
+        btn.classList.add('playing');
+        const row = btn.closest('.status-music-lib-row');
+        if(row) row.classList.add('playing');
       }).catch(() => {});
     };
   });
@@ -575,13 +588,18 @@ function wireMusicLibraryList(slide, lib, currentTrack){
   }
 
   if(searchEl){
+    const emptyEl = document.getElementById('statusMusicLibEmpty');
     searchEl.oninput = () => {
       const q = searchEl.value.trim().toLowerCase();
+      let visibleCount = 0;
       listEl.querySelectorAll('.status-music-lib-row').forEach(row => {
         const nameEl = row.querySelector('.status-music-lib-name');
         const name = (nameEl ? nameEl.textContent : '').toLowerCase();
-        row.style.display = (!q || name.includes(q)) ? '' : 'none';
+        const match = !q || name.includes(q);
+        row.style.display = match ? '' : 'none';
+        if(match) visibleCount++;
       });
+      if(emptyEl) emptyEl.style.display = visibleCount ? 'none' : 'block';
     };
   }
 }
