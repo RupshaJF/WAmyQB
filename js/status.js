@@ -580,27 +580,45 @@ function renderImageStage(stage, slide){
   const filterCss = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
   stage.innerHTML = `
     <div class="status-img-frame" id="statusImgFrame">
+      <div class="status-img-frame-bg" id="statusImgFrameBg" style="background-image:url('${slide.imageRawDataUrl}');filter:blur(32px) brightness(.55)${filterCss ? ' ' + filterCss : ''};"></div>
       <img class="status-crop-img" id="statusCropImg" src="${slide.imageRawDataUrl}" style="filter:${filterCss};">
       <div class="status-overlay-layer" id="statusOverlayLayer"></div>
     </div>`;
   const frame = document.getElementById('statusImgFrame');
-  requestAnimationFrame(() => {
+  const imgEl = document.getElementById('statusCropImg');
+  const setup = () => {
     const r = frame.getBoundingClientRect();
     slide.frameAspect = r.height ? (r.width / r.height) : (9/16);
     applyImageTransform(frame, slide);
     renderOverlaysLayer(slide, frame);
-  });
+  };
+  // imageRawDataUrl is a data: URL so decode is near-instant, but naturalWidth
+  // is 0 until it actually finishes — applyImageTransform's contain-scale math
+  // needs the real dimensions, so wait for load rather than assuming it's ready.
+  if(imgEl.complete && imgEl.naturalWidth) requestAnimationFrame(setup);
+  else imgEl.onload = () => requestAnimationFrame(setup);
   attachImageFrameGestures(frame, slide);
 }
 
 function applyImageTransform(frameEl, slide){
   const img = frameEl.querySelector('.status-crop-img');
-  if(!img) return;
+  if(!img || !img.naturalWidth || !img.naturalHeight) return;
   const rect = frameEl.getBoundingClientRect();
   const scale = clamp(slide.crop.scale || 1, 1, 4);
   slide.crop.scale = scale;
-  const maxPanXpx = (scale - 1) / 2 * rect.width;
-  const maxPanYpx = (scale - 1) / 2 * rect.height;
+  // img is laid out at width:100%/height:100% with object-fit:contain, so at
+  // scale=1 the whole photo is already visible, letterboxed on one axis —
+  // that's the new default (no forced crop). scale zooms in from there: the
+  // CSS transform scales the element's own box, and since object-fit:contain
+  // centers the photo inside that box, scaling the box scales the visible
+  // photo by the same factor. Pan bounds are computed from the photo's real
+  // rendered size at the current zoom, not assumed from a fixed formula, so
+  // this works correctly for any photo aspect ratio.
+  const containScale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight) || 1;
+  const drawW = img.naturalWidth * containScale * scale;
+  const drawH = img.naturalHeight * containScale * scale;
+  const maxPanXpx = Math.max(0, (drawW - rect.width) / 2);
+  const maxPanYpx = Math.max(0, (drawH - rect.height) / 2);
   let txPx = (slide.crop.offsetXFrac || 0) * rect.width;
   let tyPx = (slide.crop.offsetYFrac || 0) * rect.height;
   txPx = clamp(txPx, -maxPanXpx, maxPanXpx);
@@ -973,14 +991,35 @@ async function renderSlideToImageDataUrl(slide){
   const ctx = canvas.getContext('2d');
 
   const filterCss = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
-  if(filterCss && 'filter' in ctx) ctx.filter = filterCss;
 
+  // Solid base first (safety net if canvas filter isn't supported below).
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, outW, outH);
+
+  // Blurred, cover-scaled backdrop so a photo whose aspect ratio doesn't match
+  // the frame never leaves an empty/black bar — same idea Instagram/Spotify
+  // use for stories. Purely cosmetic fill; the sharp photo below is what
+  // actually carries the content, uncropped.
+  if('filter' in ctx){
+    const bgCoverScale = Math.max(outW / img.naturalWidth, outH / img.naturalHeight);
+    const bleed = 1.08; // a touch larger so the blur's own soft edge never peeks past the canvas edge
+    const bgW = img.naturalWidth * bgCoverScale * bleed, bgH = img.naturalHeight * bgCoverScale * bleed;
+    ctx.save();
+    ctx.filter = 'blur(24px) brightness(0.55)' + (filterCss ? ' ' + filterCss : '');
+    ctx.drawImage(img, (outW - bgW) / 2, (outH - bgH) / 2, bgW, bgH);
+    ctx.restore();
+  }
+
+  // The sharp photo itself — contained (whole photo, never cropped) at
+  // scale=1; only zooms in past that if the user deliberately pinched while
+  // editing, matching the live preview's applyImageTransform exactly.
+  if(filterCss && 'filter' in ctx) ctx.filter = filterCss;
   const scale = clamp(slide.crop.scale || 1, 1, 4);
-  const coverScale = Math.max(outW / img.naturalWidth, outH / img.naturalHeight);
-  const effScale = coverScale * scale;
+  const containScale = Math.min(outW / img.naturalWidth, outH / img.naturalHeight);
+  const effScale = containScale * scale;
   const drawW = img.naturalWidth * effScale, drawH = img.naturalHeight * effScale;
-  const maxOffX = (scale - 1) / 2 * outW;
-  const maxOffY = (scale - 1) / 2 * outH;
+  const maxOffX = Math.max(0, (drawW - outW) / 2);
+  const maxOffY = Math.max(0, (drawH - outH) / 2);
   const offX = clamp((slide.crop.offsetXFrac || 0) * outW, -maxOffX, maxOffX);
   const offY = clamp((slide.crop.offsetYFrac || 0) * outH, -maxOffY, maxOffY);
   const dx = (outW - drawW) / 2 + offX;
@@ -1219,8 +1258,11 @@ function renderComposerBottomPanel(){
       btn.onclick = () => {
         pushUndoSnapshot();
         slide.filterId = btn.dataset.id;
+        const filterCss = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
         const img = document.getElementById('statusCropImg');
-        if(img) img.style.filter = (STATUS_FILTERS.find(f => f.id === slide.filterId) || STATUS_FILTERS[0]).css;
+        if(img) img.style.filter = filterCss;
+        const bg = document.getElementById('statusImgFrameBg');
+        if(bg) bg.style.filter = 'blur(32px) brightness(.55)' + (filterCss ? ' ' + filterCss : '');
         renderComposerBottomPanel();
         saveComposerDraft();
       };
@@ -1513,10 +1555,13 @@ function statusViewItemHtml(it, i){
     </div>`;
   }
   if(it.type === 'image'){
-    return `<div class="status-view-item" data-i="${i}">
+    const overlay = (it.text || it.audioData) ? `<div class="status-view-bottom-overlay">
+        ${it.text ? `<div class="status-view-caption">${escapeHtml(it.text)}</div>` : ''}
+        ${statusMusicChipHtml(it)}
+      </div>` : '';
+    return `<div class="status-view-item status-view-item-image" data-i="${i}">
       <img src="${it.imageData}" alt="">
-      ${it.text ? `<div class="status-view-caption">${escapeHtml(it.text)}</div>` : ''}
-      ${statusMusicChipHtml(it)}
+      ${overlay}
     </div>`;
   }
   const font = STATUS_FONTS.find(f => f.id === it.font) || STATUS_FONTS[0];

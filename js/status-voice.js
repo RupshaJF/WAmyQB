@@ -20,6 +20,15 @@
 // audio file already on the user's phone (their own recordings, or any
 // nasheed/gojol file they've legally downloaded and saved locally).
 //
+// To make that picking-and-trimming feel like a real "pick a song" flow
+// instead of a bare file input every time, every clip that's picked+trimmed
+// or recorded for BACKGROUND MUSIC is also kept in a small personal, on-device
+// "আমার মিউজিক" library (IndexedDB via IDBKV, see statusMusicLib* below) —
+// so the next status reuses it with one tap, with inline play-preview,
+// search and delete, instead of re-picking a file from the phone every time.
+// Purely a per-device convenience list of the user's own already-trimmed
+// clips; still no bundled/streamed catalog of any kind.
+//
 // Everything is stored the same way images already are in this codebase —
 // a compressed clip base64-encoded directly into the Firestore status
 // document (see firestore.rules) — so no Firebase Storage bucket is
@@ -45,6 +54,8 @@ const STATUS_MUSIC_BITRATE = 28000;  // just a backing track — keep it tiny
 const STATUS_AUDIO_MAX_BYTES = 750000; // matches firestore.rules' audioData cap
 const STATUS_PEAK_BARS = 40;         // resolution of the stored waveform shape
 const STATUS_LIVE_BAR_COUNT = 24;    // bars shown while actively recording
+const STATUS_MUSIC_LIB_KEY = 'qr_status_music_lib'; // IDBKV key for the personal music library
+const STATUS_MUSIC_LIB_MAX = 24;     // how many personal clips to remember (oldest drop off)
 
 function statusVoiceSupported(){
   return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
@@ -60,6 +71,44 @@ function statusPickRecorderMime(){
     try{ if(window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(c)) return c; }catch(e){}
   }
   return '';
+}
+
+// ==================================================================
+// Personal "আমার মিউজিক" library — a per-device list of previously
+// picked+trimmed or recorded background-music clips, so the next status
+// reuses one with a single tap instead of re-picking a file from the phone
+// every time. Backed by IDBKV (same store the composer draft already uses),
+// entries are { id, name, dataUrl, duration, peaks, savedAt }, newest first,
+// capped at STATUS_MUSIC_LIB_MAX (oldest quietly drop off).
+// ==================================================================
+function statusMusicLibLoad(){
+  try{
+    if(typeof IDBKV === 'undefined') return [];
+    const raw = IDBKV.get(STATUS_MUSIC_LIB_KEY);
+    const list = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list : [];
+  }catch(e){ return []; }
+}
+function statusMusicLibSave(list){
+  try{ if(typeof IDBKV !== 'undefined') IDBKV.set(STATUS_MUSIC_LIB_KEY, JSON.stringify(list)); }catch(e){}
+}
+function statusMusicLibAdd(track){
+  // track: { name, dataUrl, duration, peaks }
+  let list = statusMusicLibLoad();
+  list = list.filter(t => !(t.name === track.name && t.duration === track.duration));
+  list.unshift({
+    id: (typeof statusUid === 'function' ? statusUid() : ('m' + Date.now().toString(36))),
+    name: track.name, dataUrl: track.dataUrl, duration: track.duration, peaks: track.peaks,
+    savedAt: Date.now()
+  });
+  if(list.length > STATUS_MUSIC_LIB_MAX) list = list.slice(0, STATUS_MUSIC_LIB_MAX);
+  statusMusicLibSave(list);
+  return list;
+}
+function statusMusicLibRemove(id){
+  const list = statusMusicLibLoad().filter(t => t.id !== id);
+  statusMusicLibSave(list);
+  return list;
 }
 
 // ==================================================================
@@ -390,7 +439,7 @@ function reopenAudioSheetEntryScreen(){
 }
 
 function statusVoicePauseAllComposerAudio(){
-  ['statusVoiceStageAudio','statusAudioPreviewAudio','statusTrimPreviewAudio'].forEach(id => {
+  ['statusVoiceStageAudio','statusAudioPreviewAudio','statusTrimPreviewAudio','statusMusicLibPreviewAudio'].forEach(id => {
     const el = document.getElementById(id);
     if(el){ try{ el.pause(); }catch(e){} }
   });
@@ -400,11 +449,20 @@ function statusVoicePauseAllComposerAudio(){
 function renderMusicSourcePicker(slide){
   const body = document.getElementById('statusAudioSheetBody');
   const current = slide.musicData
-    ? `<div class="status-audio-current">
-         <i class="fa-solid fa-music"></i>
+    ? `<div class="status-audio-current" id="statusMusicCurrentCard">
+         <button type="button" class="status-music-lib-play" data-id="__current__" title="প্রিভিউ শুনুন"><i class="fa-solid fa-play"></i></button>
          <div class="status-audio-current-label">${escapeHtml(slide.musicName || 'যুক্ত করা অডিও')} · ${fmtTime((slide.musicDuration||0)/1000)}</div>
-         <button type="button" class="status-sheet-btn danger" id="statusMusicRemoveBtn">সরান</button>
+         <button type="button" class="status-sheet-btn danger" id="statusMusicRemoveBtn" title="সরান"><i class="fa-solid fa-trash"></i></button>
        </div>` : '';
+
+  const lib = statusMusicLibLoad();
+  const libSection = lib.length ? `
+    <div class="status-music-lib-head">
+      <span>আমার মিউজিক</span>
+      ${lib.length > 6 ? `<input type="text" class="status-music-lib-search" id="statusMusicLibSearch" placeholder="খুঁজুন...">` : ''}
+    </div>
+    <div class="status-music-lib-list" id="statusMusicLibList">${lib.map(statusMusicLibRowHtml).join('')}</div>` : '';
+
   body.innerHTML = `
     ${current}
     <div class="status-audio-source-row">
@@ -416,7 +474,10 @@ function renderMusicSourcePicker(slide){
         <input type="file" accept="audio/*" id="statusMusicFileInput" style="display:none;">
       </label>
     </div>
-    <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনে রাখা যেকোনো গজল/নাশিদ ফাইল ব্যবহার করা যাবে — কপিরাইটেড গান দেওয়া থেকে বিরত থাকুন।</div>`;
+    ${libSection}
+    <audio id="statusMusicLibPreviewAudio" style="display:none;"></audio>
+    <div class="status-audio-hint">সর্বোচ্চ ${fmtTime(STATUS_MUSIC_MAX_MS/1000)} — লম্বা ফাইল থেকে যেকোনো অংশ বেছে নিতে পারবেন। নিজের ফোনে রাখা যেকোনো গজল/নাশিদ ফাইল ব্যবহার করা যাবে — কপিরাইটেড গান দেওয়া থেকে বিরত থাকুন। একবার যুক্ত করা অডিও "আমার মিউজিক"-এ জমা থাকবে, পরেরবার এক ট্যাপেই বেছে নেওয়া যাবে।</div>`;
+
   if(current){
     document.getElementById('statusMusicRemoveBtn').onclick = () => {
       pushUndoSnapshot();
@@ -433,6 +494,96 @@ function renderMusicSourcePicker(slide){
     e.target.value = '';
     if(file) handleMusicFilePick(file);
   });
+
+  wireMusicLibraryList(slide, lib, slide.musicData ? { id:'__current__', dataUrl: slide.musicData, duration: slide.musicDuration } : null);
+}
+
+function statusMusicLibRowHtml(t){
+  return `<div class="status-music-lib-row" data-id="${t.id}" role="button" tabindex="0">
+    <button type="button" class="status-music-lib-play" data-id="${t.id}"><i class="fa-solid fa-play"></i></button>
+    <div class="status-music-lib-info">
+      <div class="status-music-lib-name">${escapeHtml(t.name || 'অডিও')}</div>
+      <div class="status-music-lib-time">${fmtTime((t.duration||0)/1000)}</div>
+    </div>
+    <button type="button" class="status-music-lib-del" data-id="${t.id}" title="মুছুন"><i class="fa-solid fa-trash"></i></button>
+  </div>`;
+}
+
+function attachLibTrackToSlide(slide, t){
+  pushUndoSnapshot();
+  slide.musicData = t.dataUrl; slide.musicDuration = t.duration; slide.musicPeaks = t.peaks; slide.musicName = t.name;
+  closeStatusAudioSheet();
+  renderComposerStage();
+  saveComposerDraft();
+  showToast('মিউজিক যুক্ত হয়েছে');
+}
+
+// Wires the library list + the "currently attached" card to one shared
+// preview <audio> element, so tapping a different play button stops whichever
+// clip was previewing before — a plain play/pause toggle per row, deliberately
+// lighter than statusWirePlayableAudio's single-clip waveform-progress wiring
+// since a list of many rows doesn't need a live progress bar on each.
+function wireMusicLibraryList(slide, lib, currentTrack){
+  const body = document.getElementById('statusAudioSheetBody');
+  const audioEl = document.getElementById('statusMusicLibPreviewAudio');
+  const listEl = document.getElementById('statusMusicLibList');
+  const searchEl = document.getElementById('statusMusicLibSearch');
+  if(!audioEl || !body) return;
+
+  function stopPreview(){
+    try{ audioEl.pause(); }catch(e){}
+    audioEl.dataset.playingId = '';
+    body.querySelectorAll('.status-music-lib-play i').forEach(i => { i.className = 'fa-solid fa-play'; });
+  }
+  audioEl.addEventListener('ended', stopPreview);
+
+  function findTrack(id){ return id === '__current__' ? currentTrack : lib.find(t => t.id === id); }
+
+  body.querySelectorAll('.status-music-lib-play').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.id;
+      if(audioEl.dataset.playingId === id && !audioEl.paused){ stopPreview(); return; }
+      const track = findTrack(id);
+      if(!track || !track.dataUrl) return;
+      stopPreview();
+      audioEl.src = track.dataUrl;
+      audioEl.dataset.playingId = id;
+      audioEl.play().then(() => {
+        const i = btn.querySelector('i');
+        if(i) i.className = 'fa-solid fa-pause';
+      }).catch(() => {});
+    };
+  });
+
+  if(listEl){
+    listEl.querySelectorAll('.status-music-lib-row').forEach(row => {
+      row.onclick = () => {
+        const t = lib.find(x => x.id === row.dataset.id);
+        if(t) attachLibTrackToSlide(slide, t);
+      };
+      row.addEventListener('keydown', (e) => { if(e.key === 'Enter' || e.key === ' '){ e.preventDefault(); row.click(); } });
+      const delBtn = row.querySelector('.status-music-lib-del');
+      if(delBtn){
+        delBtn.onclick = (e) => {
+          e.stopPropagation();
+          statusMusicLibRemove(row.dataset.id);
+          renderMusicSourcePicker(slide);
+        };
+      }
+    });
+  }
+
+  if(searchEl){
+    searchEl.oninput = () => {
+      const q = searchEl.value.trim().toLowerCase();
+      listEl.querySelectorAll('.status-music-lib-row').forEach(row => {
+        const nameEl = row.querySelector('.status-music-lib-name');
+        const name = (nameEl ? nameEl.textContent : '').toLowerCase();
+        row.style.display = (!q || name.includes(q)) ? '' : 'none';
+      });
+    };
+  }
 }
 
 async function handleMusicFilePick(file){
@@ -531,11 +682,13 @@ function renderMusicTrimUI(audioBuffer, fileName){
       }
       const peaks = statusVoiceComputePeaks(audioBuffer, STATUS_PEAK_BARS, startSec, maxSec);
       const slide = statusAudioSheetState.slide;
+      const musicName = (fileName || 'অডিও').replace(/\.[a-zA-Z0-9]+$/, '').slice(0, 60);
       pushUndoSnapshot();
       slide.musicData = dataUrl;
       slide.musicDuration = Math.round(maxSec*1000);
       slide.musicPeaks = peaks;
-      slide.musicName = (fileName || 'অডিও').replace(/\.[a-zA-Z0-9]+$/, '').slice(0, 60);
+      slide.musicName = musicName;
+      statusMusicLibAdd({ name: musicName, dataUrl, duration: Math.round(maxSec*1000), peaks });
       closeStatusAudioSheet();
       renderComposerStage();
       saveComposerDraft();
@@ -644,7 +797,9 @@ function renderAudioSheetPreview(dataUrl, durationMs, peaks){
       slide.voiceData = dataUrl; slide.voiceDuration = durationMs; slide.voicePeaks = peaks;
     } else {
       slide.musicData = dataUrl; slide.musicDuration = durationMs; slide.musicPeaks = peaks;
-      slide.musicName = 'রেকর্ড করা অডিও';
+      const ordinal = statusMusicLibLoad().length + 1;
+      slide.musicName = 'রেকর্ড করা অডিও ' + (typeof toBn === 'function' ? toBn(ordinal) : ordinal);
+      statusMusicLibAdd({ name: slide.musicName, dataUrl, duration: durationMs, peaks });
     }
     closeStatusAudioSheet();
     renderComposerStage();
