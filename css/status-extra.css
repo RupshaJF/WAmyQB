@@ -72,9 +72,10 @@
 .status-audio-loading{padding:30px 0;text-align:center;color:var(--ink-soft);font-size:13px;font-family:'Hind Siliguri',sans-serif;}
 .status-audio-loading i{margin-right:6px;}
 .status-audio-current{
-  display:flex;align-items:center;gap:10px;background:var(--panel);border-radius:12px;padding:10px 12px;margin-bottom:14px;
+  display:flex;align-items:center;gap:11px;background:var(--panel);border:1.5px solid var(--line);
+  border-radius:16px;padding:9px 10px 9px 13px;margin-bottom:16px;transition:border-color .18s ease;
 }
-.status-audio-current i{color:var(--gold);font-size:15px;flex-shrink:0;}
+.status-audio-current:has(.status-music-lib-play.playing){border-color:var(--gold);}
 .status-audio-current-label{flex:1;min-width:0;font-size:12.5px;color:var(--ink);font-family:'Hind Siliguri',sans-serif;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .status-audio-source-row{display:flex;gap:10px;margin-bottom:10px;}
@@ -85,6 +86,78 @@
 }
 .status-audio-source-btn i{font-size:19px;color:var(--gold);}
 .status-audio-hint{color:var(--ink-soft);margin-top:4px;}
+
+/* ---------- Personal "আমার মিউজিক" library (status-voice.js
+   statusMusicLib*) — previously picked+trimmed or recorded clips, one tap
+   to reuse. Deliberately flat/solid throughout — no shadow, blur or glow —
+   "modern" here comes from spacing, motion and a proper now-playing
+   indicator instead, reusing only the app's existing theme variables. ---------- */
+.status-music-lib-head{
+  display:flex;align-items:center;justify-content:space-between;gap:10px;margin:22px 2px 10px;
+}
+.status-music-lib-head-title{
+  display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:700;color:var(--ink-soft);
+  font-family:'Hind Siliguri',sans-serif;text-transform:uppercase;letter-spacing:.04em;
+}
+.status-music-lib-head-title i{color:var(--gold);font-size:12px;}
+.status-music-lib-count{
+  background:var(--panel);border:1px solid var(--line);color:var(--ink-soft);border-radius:999px;
+  font-size:10.5px;font-weight:700;padding:1px 8px;font-family:'Hind Siliguri',sans-serif;
+}
+.status-music-lib-search-wrap{position:relative;flex:1;max-width:168px;}
+.status-music-lib-search-wrap i{
+  position:absolute;left:13px;top:50%;transform:translateY(-50%);font-size:10.5px;color:var(--ink-soft);pointer-events:none;
+}
+.status-music-lib-search{
+  width:100%;box-sizing:border-box;background:var(--panel);border:1.5px solid var(--line);border-radius:999px;
+  padding:7px 14px 7px 30px;color:var(--ink);font-size:12px;font-family:'Hind Siliguri',sans-serif;outline:none;
+  transition:border-color .18s ease;
+}
+.status-music-lib-search:focus{border-color:var(--gold);}
+.status-music-lib-list{
+  display:flex;flex-direction:column;gap:9px;max-height:244px;overflow-y:auto;margin-bottom:6px;padding:2px 2px 2px 0;
+  scrollbar-width:thin;scrollbar-color:var(--line) transparent;
+}
+.status-music-lib-list::-webkit-scrollbar{width:5px;}
+.status-music-lib-list::-webkit-scrollbar-track{background:transparent;}
+.status-music-lib-list::-webkit-scrollbar-thumb{background:var(--line);border-radius:10px;}
+@keyframes statusMusicRowIn{from{opacity:0;transform:translateY(7px);}to{opacity:1;transform:translateY(0);}}
+.status-music-lib-row{
+  display:flex;align-items:center;gap:11px;width:100%;background:var(--panel);border:1.5px solid var(--line);
+  border-radius:16px;padding:8px 11px 8px 8px;cursor:pointer;box-sizing:border-box;
+  animation:statusMusicRowIn .3s cubic-bezier(.2,.8,.2,1) both;
+  transition:border-color .16s ease,transform .12s ease;
+}
+.status-music-lib-row:active{transform:scale(.985);}
+.status-music-lib-row.playing{border-color:var(--gold);}
+.status-music-lib-row.playing .status-music-lib-name{color:var(--gold);}
+.status-music-lib-empty{
+  text-align:center;padding:20px 10px;color:var(--ink-soft);font-size:12px;font-family:'Hind Siliguri',sans-serif;
+}
+.status-music-lib-play{
+  width:38px;height:38px;border-radius:50%;background:var(--gold);color:var(--teal-deep);border:none;
+  font-size:13px;display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;
+  transition:transform .14s ease;
+}
+.status-music-lib-play:active{transform:scale(.88);}
+.status-music-lib-eq{display:none;align-items:flex-end;justify-content:center;gap:2.5px;height:14px;width:14px;}
+.status-music-lib-play.playing i.fa-solid{display:none;}
+.status-music-lib-play.playing .status-music-lib-eq{display:flex;}
+.status-music-lib-eq i{width:2.5px;background:var(--teal-deep);border-radius:1px;animation:statusMusicEq .9s ease-in-out infinite;}
+.status-music-lib-eq i:nth-child(1){height:40%;animation-delay:-.7s;}
+.status-music-lib-eq i:nth-child(2){height:100%;animation-delay:-.3s;}
+.status-music-lib-eq i:nth-child(3){height:65%;animation-delay:-1s;}
+@keyframes statusMusicEq{0%,100%{transform:scaleY(.32);}50%{transform:scaleY(1);}}
+.status-music-lib-info{flex:1;min-width:0;}
+.status-music-lib-name{font-size:13px;font-weight:600;color:var(--ink);font-family:'Hind Siliguri',sans-serif;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:color .16s ease;}
+.status-music-lib-time{font-size:11px;color:var(--ink-soft);margin-top:2px;font-family:'Hind Siliguri',sans-serif;}
+.status-music-lib-del{
+  width:30px;height:30px;border-radius:50%;background:none;border:1.5px solid transparent;box-sizing:border-box;
+  color:var(--ink-soft);font-size:12px;display:flex;align-items:center;justify-content:center;
+  cursor:pointer;flex-shrink:0;transition:border-color .16s ease,color .16s ease;
+}
+.status-music-lib-del:active{color:#c94b60;border-color:#c94b60;}
 
 .status-audio-sheet .status-voice-comp{padding:14px 4px 4px;}
 .status-audio-sheet .status-voice-hint{color:var(--ink-soft);}
