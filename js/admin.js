@@ -10,9 +10,11 @@ const AdminPanel = (() => {
 
   /* ── state ── */
   let _db = null, _auth = null, _user = null;
-  let _unsub = null, _unsubMusic = null, _overlay = null, _ready = false;
+  let _unsub = null, _unsubMusic = null, _unsubErrors = null, _overlay = null, _ready = false;
   let _musicPick = null; // { audioBuffer, fileName, totalSec, maxSec, startSec } — in-progress upload draft
   const AP_MUSIC_MAX_BYTES = 150000; // matches firestore.rules' sharedMusic.audioData cap
+  let _errFilterUnresolved = true; // monitoring tab: show only unresolved by default (triage view)
+  let _lastErrorDocs = []; // last system_errors snapshot, so the filter toggle re-renders without a re-query
 
   /* ══════════════════════════════════════════════════════
      CSS — scoped under #apOverlay to avoid conflicts
@@ -313,6 +315,30 @@ const AdminPanel = (() => {
   #apOverlay .ap-music-info{flex:1;min-width:0;}
   #apOverlay .ap-music-title{font-size:14px;font-weight:700;color:var(--ink,#1c2b23);word-break:break-word;}
   #apOverlay .ap-music-time{font-size:11.5px;color:var(--ink-soft,#5c6d64);margin-top:2px;}
+
+  /* monitoring: error log rows */
+  #apOverlay .ap-err-filter{
+    display:flex;align-items:center;gap:7px;font-size:12px;color:var(--ink-soft,#5c6d64);
+    font-family:'Hind Siliguri',sans-serif;cursor:pointer;user-select:none;margin-left:auto;font-weight:500;
+  }
+  #apOverlay .ap-err-filter input{accent-color:var(--gold,#b8863b);width:15px;height:15px;}
+  #apOverlay .ap-err-row{padding:13px 0;border-bottom:1px solid var(--line,#e2ddd0);cursor:pointer;}
+  #apOverlay .ap-err-row:last-child{border-bottom:none;padding-bottom:0;}
+  #apOverlay .ap-err-row:first-child{padding-top:0;}
+  #apOverlay .ap-err-row.resolved{opacity:.5;}
+  #apOverlay .ap-err-top{display:flex;align-items:flex-start;gap:10px;}
+  #apOverlay .ap-err-dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex-shrink:0;background:#c0392b;}
+  #apOverlay .ap-err-dot.warning{background:#c98a1f;}
+  #apOverlay .ap-err-body{flex:1;min-width:0;}
+  #apOverlay .ap-err-msg{font-size:13.5px;font-weight:600;color:var(--ink,#1c2b23);word-break:break-word;}
+  #apOverlay .ap-err-meta{font-size:11px;color:var(--ink-soft,#5c6d64);margin-top:3px;}
+  #apOverlay .ap-err-actions{display:flex;gap:6px;flex-shrink:0;}
+  #apOverlay .ap-err-stack{
+    margin-top:10px;padding:10px;background:#fff;border:1px solid var(--line,#e2ddd0);border-radius:8px;
+    font-family:monospace;font-size:11px;color:var(--ink-soft,#5c6d64);white-space:pre-wrap;word-break:break-word;
+    max-height:200px;overflow-y:auto;display:none;
+  }
+  #apOverlay .ap-err-row.expanded .ap-err-stack{display:block;}
   `;
 
   /* ── helpers ── */
@@ -494,6 +520,7 @@ const AdminPanel = (() => {
       <div class="ap-tabs" id="apTabs" style="display:none;">
         <button type="button" class="ap-tab active" id="apTabExam" data-tab="exam"><i class="fa-solid fa-pen-to-square"></i> পরীক্ষা</button>
         <button type="button" class="ap-tab" id="apTabMusic" data-tab="music"><i class="fa-solid fa-record-vinyl"></i> মিউজিক</button>
+        <button type="button" class="ap-tab" id="apTabErrors" data-tab="errors"><i class="fa-solid fa-heart-pulse"></i> মনিটরিং</button>
       </div>
 
       <!-- main body -->
@@ -542,6 +569,36 @@ const AdminPanel = (() => {
             <div id="apMusicList"><div class="ap-empty"><i class="fa-solid fa-spinner fa-spin"></i>লোড হচ্ছে...</div></div>
           </div>
         </div>
+
+        <div id="apPanelErrors" style="display:none;flex-direction:column;gap:16px;">
+          <!-- stats -->
+          <div class="ap-stats">
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apErrStatTotal">—</div>
+              <div class="ap-stat-lbl">মোট লগ</div>
+            </div>
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apErrStatUnresolved">—</div>
+              <div class="ap-stat-lbl">অসমাধানকৃত</div>
+            </div>
+            <div class="ap-stat">
+              <div class="ap-stat-val" id="apErrStatResolved">—</div>
+              <div class="ap-stat-lbl">সমাধান হয়েছে</div>
+            </div>
+          </div>
+
+          <!-- list -->
+          <div class="ap-card">
+            <div class="ap-card-head">
+              <i class="fa-solid fa-list"></i> এরর লগ
+              <label class="ap-err-filter">
+                <input type="checkbox" id="apErrFilterToggle" checked>
+                শুধু অসমাধানকৃত
+              </label>
+            </div>
+            <div id="apErrList"><div class="ap-empty"><i class="fa-solid fa-spinner fa-spin"></i>লোড হচ্ছে...</div></div>
+          </div>
+        </div>
       </div>
 
       <div class="ap-toast" id="apToast"></div>
@@ -571,6 +628,12 @@ const AdminPanel = (() => {
 
     _overlay.querySelector('#apTabExam').onclick = () => switchTab('exam');
     _overlay.querySelector('#apTabMusic').onclick = () => switchTab('music');
+    _overlay.querySelector('#apTabErrors').onclick = () => switchTab('errors');
+
+    _overlay.querySelector('#apErrFilterToggle').onchange = (e) => {
+      _errFilterUnresolved = e.target.checked;
+      renderErrorList(_lastErrorDocs);
+    };
 
     _overlay.querySelector('#apMusicFileInput').addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -581,11 +644,12 @@ const AdminPanel = (() => {
 
   /* ── tab switching ── */
   function switchTab(tab) {
-    const isExam = tab === 'exam';
-    _overlay.querySelector('#apTabExam').classList.toggle('active', isExam);
-    _overlay.querySelector('#apTabMusic').classList.toggle('active', !isExam);
-    _overlay.querySelector('#apPanelExam').style.display = isExam ? 'flex' : 'none';
-    _overlay.querySelector('#apPanelMusic').style.display = isExam ? 'none' : 'flex';
+    _overlay.querySelector('#apTabExam').classList.toggle('active', tab === 'exam');
+    _overlay.querySelector('#apTabMusic').classList.toggle('active', tab === 'music');
+    _overlay.querySelector('#apTabErrors').classList.toggle('active', tab === 'errors');
+    _overlay.querySelector('#apPanelExam').style.display   = tab === 'exam'   ? 'flex' : 'none';
+    _overlay.querySelector('#apPanelMusic').style.display  = tab === 'music'  ? 'flex' : 'none';
+    _overlay.querySelector('#apPanelErrors').style.display = tab === 'errors' ? 'flex' : 'none';
   }
 
   /* ── add exam ── */
@@ -1017,6 +1081,79 @@ const AdminPanel = (() => {
     }
   }
 
+  /* ══════════════════════════════════════════════════════
+     MONITORING TAB — viewer for the `system_errors` collection.
+     That collection was already being populated (js/error-logger.js
+     has been catching window 'error'/'unhandledrejection' and writing
+     here all along — see its own comment, which literally says "the
+     admin panel shows this"), it just never had a viewer here until now.
+  ══════════════════════════════════════════════════════ */
+
+  function errorRowHtml(id, d) {
+    let ts = Date.now();
+    if (d.timestamp) { ts = typeof d.timestamp.toMillis === 'function' ? d.timestamp.toMillis() : (d.timestamp.seconds ? d.timestamp.seconds*1000 : ts); }
+    const ago = (typeof timeAgoBn === 'function') ? timeAgoBn(ts) : '';
+    const sev = d.severity === 'warning' ? 'warning' : 'error';
+    const sevLabel = sev === 'warning' ? 'সতর্কতা' : 'ত্রুটি';
+    const stackText = (d.stack ? d.stack : 'কোনো স্ট্যাক ট্রেস নেই') + (d.uid ? ('\n\nuid: ' + d.uid) : '') + (d.userAgent ? ('\n\nbrowser: ' + d.userAgent) : '');
+    return `<div class="ap-err-row${d.resolved ? ' resolved' : ''}" data-id="${id}">
+      <div class="ap-err-top">
+        <div class="ap-err-dot ${sev}"></div>
+        <div class="ap-err-body">
+          <div class="ap-err-msg">${x(d.message || 'অজানা এরর')}</div>
+          <div class="ap-err-meta">${sevLabel} · ${x(d.page || '')} · ${ago}</div>
+        </div>
+        <div class="ap-err-actions">
+          <button class="ap-icon-btn" data-act="resolve" data-id="${id}" data-resolved="${d.resolved ? 1 : 0}" title="${d.resolved ? 'অসমাধিত হিসেবে মার্ক করুন' : 'সমাধান হয়েছে মার্ক করুন'}"><i class="fa-solid ${d.resolved ? 'fa-rotate-left' : 'fa-check'}"></i></button>
+          <button class="ap-icon-btn d" data-act="del" data-id="${id}" title="মুছুন"><i class="fa-solid fa-trash"></i></button>
+        </div>
+      </div>
+      <div class="ap-err-stack">${x(stackText)}</div>
+    </div>`;
+  }
+
+  function renderErrorList(docs) {
+    const box = _overlay && _overlay.querySelector('#apErrList');
+    if (!box) return;
+    const total = docs.length;
+    const unresolved = docs.filter(({data}) => !data.resolved).length;
+    const svT = _overlay.querySelector('#apErrStatTotal');      if (svT) svT.textContent = toBn(total);
+    const svU = _overlay.querySelector('#apErrStatUnresolved'); if (svU) svU.textContent = toBn(unresolved);
+    const svR = _overlay.querySelector('#apErrStatResolved');   if (svR) svR.textContent = toBn(total - unresolved);
+
+    const shown = _errFilterUnresolved ? docs.filter(({data}) => !data.resolved) : docs;
+    if (!shown.length) {
+      box.innerHTML = `<div class="ap-empty"><i class="fa-solid fa-heart-pulse"></i>${_errFilterUnresolved ? 'কোনো অসমাধানকৃত এরর নেই — সব ঠিক আছে ✓' : 'এখনো কোনো এরর লগ হয়নি।'}</div>`;
+      return;
+    }
+    box.innerHTML = shown.map(({id,data}) => errorRowHtml(id,data)).join('');
+
+    box.querySelectorAll('.ap-err-row').forEach(row => {
+      row.onclick = (e) => {
+        if (e.target.closest('.ap-err-actions')) return;
+        row.classList.toggle('expanded');
+      };
+    });
+    box.querySelectorAll('[data-act="resolve"]').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); toggleErrorResolved(btn.dataset.id, btn.dataset.resolved === '1'); };
+    });
+    box.querySelectorAll('[data-act="del"]').forEach(btn => {
+      btn.onclick = (e) => { e.stopPropagation(); deleteError(btn.dataset.id); };
+    });
+  }
+
+  async function toggleErrorResolved(id, currentlyResolved) {
+    try {
+      await _db.collection('system_errors').doc(id).update({ resolved: !currentlyResolved });
+    } catch(e) { toast('আপডেট করা যায়নি', false); }
+  }
+
+  async function deleteError(id) {
+    try {
+      await _db.collection('system_errors').doc(id).delete();
+    } catch(e) { toast('মোছা যায়নি', false); }
+  }
+
   /* ── Firestore listener ── */
   function startListener() {
     if (_unsub) { _unsub(); _unsub = null; }
@@ -1035,6 +1172,17 @@ const AdminPanel = (() => {
       snap => renderMusicList(snap.docs.map(d => ({id: d.id, data: d.data()}))),
       err  => {
         const b = _overlay && _overlay.querySelector('#apMusicList');
+        if (b) b.innerHTML = `<div class="ap-empty"><i class="fa-solid fa-triangle-exclamation"></i>তালিকা লোড হয়নি: ${x(err.message||'')}</div>`;
+      }
+    );
+  }
+
+  function startErrorListener() {
+    if (_unsubErrors) { _unsubErrors(); _unsubErrors = null; }
+    _unsubErrors = _db.collection('system_errors').orderBy('timestamp','desc').limit(100).onSnapshot(
+      snap => { _lastErrorDocs = snap.docs.map(d => ({id: d.id, data: d.data()})); renderErrorList(_lastErrorDocs); },
+      err  => {
+        const b = _overlay && _overlay.querySelector('#apErrList');
         if (b) b.innerHTML = `<div class="ap-empty"><i class="fa-solid fa-triangle-exclamation"></i>তালিকা লোড হয়নি: ${x(err.message||'')}</div>`;
       }
     );
@@ -1062,6 +1210,7 @@ const AdminPanel = (() => {
 
     startListener();
     startMusicListener();
+    startErrorListener();
   }
 
   /* ══ PUBLIC ══ */
@@ -1099,6 +1248,7 @@ const AdminPanel = (() => {
     setTimeout(() => { if (_overlay) _overlay.style.display = 'none'; }, 280);
     if (_unsub) { _unsub(); _unsub = null; }
     if (_unsubMusic) { _unsubMusic(); _unsubMusic = null; }
+    if (_unsubErrors) { _unsubErrors(); _unsubErrors = null; }
     const previewEl = _overlay.querySelector('#apMusicPreviewAudio');
     if (previewEl) { try{ previewEl.pause(); }catch(e){} }
     _user = null;
